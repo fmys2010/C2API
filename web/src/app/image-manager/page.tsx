@@ -18,7 +18,7 @@ import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
 
 const LONG_PRESS_MS = 800;
-const IMAGE_MANAGER_CHECKBOX_CLASS = "border-stone-300 bg-white/80 dark:border-white/35 dark:bg-white/5 data-[state=checked]:border-stone-950 dark:data-[state=checked]:border-white";
+const IMAGE_MANAGER_CHECKBOX_CLASS = "border-stone-300 bg-white/80 dark:border-border dark:bg-white/5 data-[state=checked]:border-stone-950 dark:data-[state=checked]:border-white";
 
 function formatSize(size: number) {
   return size > 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(2)} MB` : `${Math.ceil(size / 1024)} KB`;
@@ -122,22 +122,22 @@ function StorageDonutChart({
           })}
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-          <span className="font-mono text-xl font-bold tracking-tight text-emerald-400">
+          <span className="text-xl font-bold tracking-tight text-emerald-400">
             {freePercent}%
           </span>
-          <span className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">
+          <span className="text-[9px] text-subtle">
             可用空间
           </span>
         </div>
       </div>
 
       {/* Legend below donut */}
-      <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 font-mono text-[10px]">
-        <span className="flex items-center gap-1 text-zinc-400">
+      <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 text-[10px]">
+        <span className="flex items-center gap-1 text-muted-foreground">
           <span className="size-1.5 rounded-full bg-emerald-400" />
           <span>剩余 {freeMb >= 1024 ? `${(freeMb / 1024).toFixed(1)} GB` : `${freeMb} MB`}</span>
         </span>
-        <span className="flex items-center gap-1 text-zinc-400">
+        <span className="flex items-center gap-1 text-muted-foreground">
           <span className="size-1.5 rounded-full bg-cyan-400" />
           <span>图片 {imageMb >= 1024 ? `${(imageMb / 1024).toFixed(1)} GB` : `${imageMb} MB`}</span>
         </span>
@@ -197,21 +197,24 @@ function ImageManagerContent() {
   const safePage = Math.min(page, pageCount);
   const currentRows = filteredItems.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
-  const selectedCount = deleteMode === "filtered" ? items.length : deleteMode === "byDate" ? 0 : selectedPaths.length;
+  const selectedCount = deleteMode === "filtered" ? filteredItems.length : deleteMode === "byDate" ? 0 : selectedPaths.length;
   const currentPageSelected = currentRows.length > 0 && currentRows.every((item) => selectedSet.has(imageKey(item)));
   const allSelected = filteredItems.length > 0 && filteredItems.every((item) => selectedSet.has(imageKey(item)));
 
+  const imagesRequestRef = useRef(0);
+
   const loadImages = async () => {
+    const requestId = ++imagesRequestRef.current;
     setIsLoading(true);
     try {
       const [data, tagsData] = await Promise.all([
         fetchManagedImages({ start_date: startDate, end_date: endDate }),
         fetchImageTags(),
       ]);
+      if (requestId !== imagesRequestRef.current) return;
       setItems(data.items);
       setAllTags(tagsData.tags);
       setSelectedPaths((current) => current.filter((path) => data.items.some((item) => imageKey(item) === path)));
-      setPage(1);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载图片失败");
     } finally {
@@ -327,7 +330,7 @@ function ImageManagerContent() {
     if (!deleteMode || selectedCount === 0) return;
     setIsDeleting(true);
     try {
-      const data = await deleteManagedImages(deleteMode === "filtered" ? { start_date: startDate, end_date: endDate, all_matching: true } : { paths: selectedPaths });
+      const data = await deleteManagedImages(deleteMode === "filtered" ? (selectedTags.length > 0 ? { paths: filteredItems.map((item) => item.rel) } : { start_date: startDate, end_date: endDate, all_matching: true }) : { paths: selectedPaths });
       toast.success(`已删除 ${data.removed} 张图片`);
       setDeleteMode(null);
       setSelectedPaths([]);
@@ -340,7 +343,7 @@ function ImageManagerContent() {
   };
 
   const handleBatchDownload = async () => {
-    const paths = deleteMode === "filtered" ? items.map((item) => item.rel) : selectedPaths;
+    const paths = deleteMode === "filtered" ? filteredItems.map((item) => item.rel) : selectedPaths;
     if (paths.length === 0) return;
     setIsDownloading(true);
     try {
@@ -358,6 +361,7 @@ function ImageManagerContent() {
   };
 
   useEffect(() => {
+    setPage(1);
     void loadImages();
   }, [startDate, endDate]);
 
@@ -365,21 +369,21 @@ function ImageManagerContent() {
     <section className="space-y-3 font-sans">
       <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2.5">
-          <h1 className="font-mono text-base font-bold tracking-tight text-white">图片管理</h1>
-          <span className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
-            {filteredItems.length} IMAGES
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">图片管理</h1>
+          <span className="rounded border border-border bg-foreground/[0.04] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            {filteredItems.length} 张图片
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <DateRangeFilter startDate={startDate} endDate={endDate} onChange={(start, end) => { setStartDate(start); setEndDate(end); }} />
-          <Button variant="outline" size="sm" onClick={clearFilters} className="h-8 rounded-lg border-white/[0.08] bg-white/[0.03] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+          <Button variant="outline" size="sm" onClick={clearFilters} className="h-8 rounded-lg border-border bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground">
             清除
           </Button>
-          <Button size="sm" onClick={() => void loadImages()} disabled={isLoading} className="h-8 rounded-lg bg-emerald-600 px-3 font-mono text-xs text-white hover:bg-emerald-500">
+          <Button size="sm" onClick={() => void loadImages()} disabled={isLoading} className="h-8 rounded-lg bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500">
             {isLoading ? <LoaderCircle className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
             查询
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setDeleteMode("filtered")} disabled={isDeleting || items.length === 0 || (!startDate && !endDate)} className="h-8 rounded-lg border-rose-500/25 bg-rose-950/30 px-2.5 font-mono text-xs text-rose-300 hover:bg-rose-900/50">
+          <Button variant="outline" size="sm" onClick={() => setDeleteMode("filtered")} disabled={isDeleting || items.length === 0 || (!startDate && !endDate)} className="h-8 rounded-lg border-rose-500/25 bg-rose-950/30 px-2.5 text-xs text-rose-300 hover:bg-rose-900/50">
             <Trash2 className="size-3.5" />
             删除匹配日期
           </Button>
@@ -435,7 +439,7 @@ function ImageManagerContent() {
       ) : null}
 
       {/* 合并后的存储空间监控与操作面板：左侧饼图，右上角显示数量和占用，右下角显示操作 */}
-      <div className="rounded-xl border border-white/[0.08] bg-[#0c0e17]/80 p-4 shadow-sm backdrop-blur-md mb-3">
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm mb-3">
         {storage ? (
           <div className="flex flex-col md:flex-row items-center md:items-stretch gap-6">
             {/* 左侧：饼图/圆环显示空间 */}
@@ -447,41 +451,41 @@ function ImageManagerContent() {
               />
             </div>
 
-            <div className="hidden md:block h-auto w-px bg-white/[0.08]" />
+            <div className="hidden md:block h-auto w-px bg-foreground/[0.08]" />
 
             {/* 右侧部分：右上角显示数量和占用，右下角显示操作 */}
             <div className="flex-1 flex flex-col justify-between gap-3.5 w-full">
               {/* 右上角：显示数量和占用 */}
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400">
+                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                   <span className="flex items-center gap-1.5">
                     <span className="size-1.5 rounded-full bg-cyan-400 animate-pulse" />
                     <span>存储状态监控</span>
                   </span>
-                  <span className="text-zinc-500 text-[10px]">REAL-TIME STORAGE</span>
+                  
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
-                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">图片数量</div>
-                    <div className="font-mono text-base sm:text-lg font-bold text-white mt-1">
-                      {storage.image_count} <span className="text-xs text-zinc-500 font-normal">张</span>
+                  <div className="rounded-lg border border-border bg-foreground/[0.02] p-2.5">
+                    <div className="text-[10px] text-muted-foreground">图片数量</div>
+                    <div className="text-base sm:text-lg font-bold text-foreground mt-1">
+                      {storage.image_count} <span className="text-xs text-subtle font-normal">张</span>
                     </div>
                   </div>
-                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
-                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">图片占用</div>
-                    <div className="font-mono text-base sm:text-lg font-bold text-cyan-400 mt-1">
+                  <div className="rounded-lg border border-border bg-foreground/[0.02] p-2.5">
+                    <div className="text-[10px] text-muted-foreground">图片占用</div>
+                    <div className="text-base sm:text-lg font-bold text-cyan-400 mt-1">
                       {storage.image_size_mb >= 1024 ? `${(storage.image_size_mb / 1024).toFixed(1)} GB` : `${storage.image_size_mb} MB`}
                     </div>
                   </div>
-                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
-                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">磁盘总量</div>
-                    <div className="font-mono text-base sm:text-lg font-bold text-zinc-200 mt-1">
+                  <div className="rounded-lg border border-border bg-foreground/[0.02] p-2.5">
+                    <div className="text-[10px] text-muted-foreground">磁盘总量</div>
+                    <div className="text-base sm:text-lg font-bold text-foreground mt-1">
                       {storage.disk_total_mb >= 1024 ? `${(storage.disk_total_mb / 1024).toFixed(1)} GB` : `${storage.disk_total_mb} MB`}
                     </div>
                   </div>
-                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
-                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">剩余空间</div>
-                    <div className={cn("font-mono text-base sm:text-lg font-bold mt-1", storage.disk_free_mb < 200 ? "text-rose-400" : storage.disk_free_mb < 500 ? "text-amber-400" : "text-emerald-400")}>
+                  <div className="rounded-lg border border-border bg-foreground/[0.02] p-2.5">
+                    <div className="text-[10px] text-muted-foreground">剩余空间</div>
+                    <div className={cn("text-base sm:text-lg font-bold mt-1", storage.disk_free_mb < 200 ? "text-rose-400" : storage.disk_free_mb < 500 ? "text-amber-400" : "text-emerald-400")}>
                       {storage.disk_free_mb >= 1024 ? `${(storage.disk_free_mb / 1024).toFixed(1)} GB` : `${storage.disk_free_mb} MB`}
                     </div>
                   </div>
@@ -489,9 +493,9 @@ function ImageManagerContent() {
               </div>
 
               {/* 右下角：显示操作 */}
-              <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
+              <div className="rounded-lg border border-border bg-foreground/[0.02] p-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 font-mono text-[11px] text-zinc-400">
+                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                     <span className="size-1.5 rounded-full bg-emerald-400" />
                     <span>存储快捷操作:</span>
                   </div>
@@ -499,7 +503,7 @@ function ImageManagerContent() {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 rounded border-white/[0.1] bg-white/[0.04] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08]"
+                      className="h-7 rounded border-border bg-foreground/[0.04] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08]"
                       disabled={storageLoading}
                       onClick={() => { void loadStorage(); }}
                     >
@@ -509,7 +513,7 @@ function ImageManagerContent() {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 rounded border-white/[0.1] bg-white/[0.04] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08]"
+                      className="h-7 rounded border-border bg-foreground/[0.04] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08]"
                       onClick={async () => {
                         try {
                           const r = await compressAllImages();
@@ -525,7 +529,7 @@ function ImageManagerContent() {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 rounded border-rose-500/25 bg-rose-950/30 px-2.5 font-mono text-xs text-rose-300 hover:bg-rose-900/50"
+                      className="h-7 rounded border-rose-500/25 bg-rose-950/30 px-2.5 text-xs text-rose-300 hover:bg-rose-900/50"
                       onClick={() => setDeleteMode("byDate")}
                     >
                       🗑️ 按日期删除
@@ -546,22 +550,22 @@ function ImageManagerContent() {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-7 rounded border-amber-500/25 bg-amber-950/30 px-2 font-mono text-xs text-amber-300 hover:bg-amber-900/50"
+                        className="h-7 rounded border-amber-500/25 bg-amber-950/30 px-2 text-xs text-amber-300 hover:bg-amber-900/50"
                         type="submit"
                       >
                         🧹 清理至
                       </Button>
                       <Input
-                        className="h-7 w-16 rounded border-white/[0.1] bg-[#050609] px-1 text-center font-mono text-xs text-zinc-200"
+                        className="h-7 w-16 rounded border-border bg-inset px-1 text-center text-xs text-foreground"
                         type="number"
                         min={50}
                         value={targetFreeMb}
                         onChange={(e) => setTargetFreeMb(Number(e.target.value) || 500)}
                       />
-                      <span className="font-mono text-[10px] text-zinc-400">MB 剩余</span>
+                      <span className="text-[10px] text-muted-foreground">MB 剩余</span>
                     </form>
                     {compressResult ? (
-                      <span className="ml-1 font-mono text-xs text-emerald-400">{compressResult}</span>
+                      <span className="ml-1 text-xs text-emerald-400">{compressResult}</span>
                     ) : null}
                   </div>
                 </div>
@@ -569,7 +573,7 @@ function ImageManagerContent() {
             </div>
           </div>
         ) : (
-          <div className="py-6 text-center font-mono text-xs text-zinc-500">
+          <div className="py-6 text-center text-xs text-subtle">
             {storageLoading ? "正在获取磁盘存储信息..." : "存储信息不可用"}
           </div>
         )}
@@ -609,7 +613,7 @@ function ImageManagerContent() {
         </DialogContent>
       </Dialog>
 
-      <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
+      <Card className="rounded-2xl border-border bg-white/90 shadow-sm">
         <CardContent className="p-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 px-5 py-4">
             <div className="flex flex-wrap items-center gap-3 text-sm text-stone-600">

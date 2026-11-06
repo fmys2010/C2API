@@ -88,8 +88,8 @@ export function AccountImportDialog({ disabled = false, onImported }: AccountImp
 
     setIsSubmitting(true);
     try {
-      const payloads = tokens.map((token) => ({ access_token: token }));
-      const data = await createAccounts(payloads);
+      
+      const data = await createAccounts(tokens);
       onImported(data.items);
       handleOpenChange(false);
       toast.success(
@@ -111,7 +111,7 @@ export function AccountImportDialog({ disabled = false, onImported }: AccountImp
           <Button
             variant="outline"
             size="sm"
-            className="h-8 rounded-lg border-white/[0.08] bg-white/[0.03] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+            className="h-8 rounded-lg border-border bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground"
             disabled={disabled}
           >
             <Upload className="size-3.5" />
@@ -120,20 +120,20 @@ export function AccountImportDialog({ disabled = false, onImported }: AccountImp
         </DialogTrigger>
         <DialogContent
           showCloseButton={false}
-          className="rounded-xl border border-white/[0.1] bg-[#0c0e17] p-5 text-zinc-200 w-[min(92vw,560px)]"
+          className="rounded-xl border border-border bg-card p-5 text-foreground w-[min(92vw,560px)]"
         >
           <DialogHeader className="gap-1.5">
-            <div className="flex items-center gap-2 font-mono text-sm text-zinc-100 font-semibold">
+            <div className="flex items-center gap-2 text-sm text-foreground font-semibold">
               <KeyRound className="size-4 text-emerald-400" />
               <DialogTitle>导入 Access Token</DialogTitle>
             </div>
-            <DialogDescription className="font-mono text-xs leading-5 text-zinc-400">
+            <DialogDescription className="text-xs leading-5 text-muted-foreground">
               粘贴 ChatGPT Access Token，一行一个。系统将自动验证、检测配额并获取可用模型。
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3 pt-2 font-mono text-xs">
-            <div className="flex items-center justify-between text-zinc-400 text-[11px]">
+          <div className="space-y-3 pt-2 text-xs">
+            <div className="flex items-center justify-between text-muted-foreground text-[11px]">
               <span>Token 列表:</span>
               <span className="text-emerald-400">已识别 {tokenCount} 个</span>
             </div>
@@ -142,19 +142,19 @@ export function AccountImportDialog({ disabled = false, onImported }: AccountImp
               placeholder="eyJhbGciOiJSUzI1NiIsInR5cCI6..."
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
-              className="min-h-48 resize-none rounded-lg border-white/[0.08] bg-[#050609] p-3 font-mono text-xs text-zinc-200 placeholder-zinc-600 focus:border-emerald-500/50"
+              className="min-h-48 resize-none rounded-lg border-border bg-inset p-3 text-xs text-foreground placeholder-subtle focus:border-emerald-500/50"
             />
 
-            <div className="flex items-center justify-between rounded-lg border border-dashed border-white/[0.1] bg-white/[0.02] p-3">
+            <div className="flex items-center justify-between rounded-lg border border-dashed border-border bg-foreground/[0.02] p-3">
               <div className="space-y-0.5">
-                <div className="text-xs font-medium text-zinc-300">从 .txt 文本读取</div>
-                <div className="text-[10px] text-zinc-500">支持文件内一行一个 Access Token</div>
+                <div className="text-xs font-medium text-muted-foreground">从 .txt 文本读取</div>
+                <div className="text-[10px] text-subtle">支持文件内一行一个 Access Token</div>
               </div>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-7 rounded border-white/[0.1] bg-white/[0.04] text-xs font-mono text-zinc-300 hover:bg-white/[0.08]"
+                className="h-7 rounded border-border bg-foreground/[0.04] text-xs text-muted-foreground hover:bg-foreground/[0.08]"
                 onClick={() => txtInputRef.current?.click()}
                 disabled={isSubmitting}
               >
@@ -177,7 +177,7 @@ export function AccountImportDialog({ disabled = false, onImported }: AccountImp
               type="button"
               variant="outline"
               size="sm"
-              className="rounded border-white/[0.1] bg-white/[0.04] font-mono text-xs text-zinc-300 hover:bg-white/[0.08]"
+              className="rounded border-border bg-foreground/[0.04] text-xs text-muted-foreground hover:bg-foreground/[0.08]"
               onClick={() => handleOpenChange(false)}
               disabled={isSubmitting}
             >
@@ -186,7 +186,7 @@ export function AccountImportDialog({ disabled = false, onImported }: AccountImp
             <Button
               type="button"
               size="sm"
-              className="rounded bg-emerald-600 font-mono text-xs text-white hover:bg-emerald-500"
+              className="rounded bg-emerald-600 text-xs text-white hover:bg-emerald-500"
               onClick={() => void handleImportTokens()}
               disabled={isSubmitting || tokenCount === 0}
             >

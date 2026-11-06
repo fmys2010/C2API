@@ -58,7 +58,9 @@ import {
   type Model,
   type RefreshProgressResponse,
 } from "@/lib/api";
+import { PollAbortedError, pollUntilDone } from "@/lib/poll";
 import { useAuthGuard } from "@/lib/use-auth-guard";
+import { usePersistentState } from "@/lib/use-persistent-state";
 import { cn } from "@/lib/utils";
 
 import { AccountImportDialog } from "./components/account-import-dialog";
@@ -96,17 +98,17 @@ const statusMeta: Record<
   },
   禁用: {
     icon: Ban,
-    badgeClass: "bg-zinc-800 border-zinc-700 text-zinc-400",
+    badgeClass: "bg-muted border-border text-muted-foreground",
     dotClass: "bg-zinc-500",
   },
 };
 
 const metricCards = [
-  { key: "total", label: "账户总数", color: "text-zinc-100", dot: "bg-zinc-400", icon: UserRound },
+  { key: "total", label: "账户总数", color: "text-foreground", dot: "bg-zinc-400", icon: UserRound },
   { key: "active", label: "正常可用", color: "text-emerald-400", dot: "bg-emerald-400", icon: CheckCircle2 },
   { key: "limited", label: "限流排队", color: "text-amber-400", dot: "bg-amber-400", icon: CircleAlert },
   { key: "abnormal", label: "登录异常", color: "text-rose-400", dot: "bg-rose-400", icon: CircleOff },
-  { key: "disabled", label: "手动禁用", color: "text-zinc-500", dot: "bg-zinc-600", icon: Ban },
+  { key: "disabled", label: "手动禁用", color: "text-subtle", dot: "bg-zinc-600", icon: Ban },
   { key: "quota", label: "剩余额度", color: "text-cyan-400", dot: "bg-cyan-400", icon: RefreshCw },
 ] as const;
 
@@ -245,17 +247,17 @@ function AccountDonutRing({
         </svg>
         {/* Center label */}
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-          <span className="font-mono text-2xl font-bold tracking-tight text-white">
+          <span className="text-2xl font-bold tracking-tight text-foreground">
             {total}
           </span>
-          <span className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">
+          <span className="text-[9px] text-subtle">
             总数
           </span>
         </div>
       </div>
 
       {/* Mini donut legend */}
-      <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-zinc-400">
+      <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
         <span className="flex items-center gap-1">
           <span className="size-1.5 rounded-full bg-emerald-400" />
           <span>正常 {active}</span>
@@ -279,14 +281,16 @@ function AccountDonutRing({
 
 function AccountsPageContent() {
   const didLoadRef = useRef(false);
+  const accountsRequestRef = useRef(0);
+  const pollAbortRef = useRef<AbortController | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
+  const [typeFilter, setTypeFilter] = usePersistentState("accounts.typeFilter", "all");
+  const [statusFilter, setStatusFilter] = usePersistentState<AccountStatus | "all">("accounts.statusFilter", "all");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState("20");
+  const [pageSize, setPageSize] = usePersistentState("accounts.pageSize", "20");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [editProxy, setEditProxy] = useState("");
@@ -323,10 +327,19 @@ function AccountsPageContent() {
     quota: string;
   } | null>(null);
 
+  // Any newer load or mutation result invalidates list responses still in flight,
+  // otherwise a stale GET could bring back rows that were just deleted or edited.
+  const applyAccounts = (items: Account[]) => {
+    accountsRequestRef.current += 1;
+    setAccounts(items);
+  };
+
   const loadAccounts = async () => {
+    const requestId = ++accountsRequestRef.current;
     setIsLoading(true);
     try {
       const data = await fetchAccounts();
+      if (requestId !== accountsRequestRef.current) return;
       setAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
     } catch (error) {
@@ -356,31 +369,12 @@ function AccountsPageContent() {
     void loadModels();
   }, []);
 
-  const pollRefreshProgress = async (
-    progressId: string,
-    onProgress: (p: RefreshProgressResponse) => void,
-    intervalMs = 300,
-  ): Promise<RefreshProgressResponse> => {
-    return new Promise((resolve, reject) => {
-      const timer = setInterval(async () => {
-        try {
-          const p = await fetchRefreshProgress(progressId);
-          onProgress(p);
-          if (p.done) {
-            clearInterval(timer);
-            if (p.error) {
-              reject(new Error(p.error));
-            } else {
-              resolve(p);
-            }
-          }
-        } catch (err) {
-          clearInterval(timer);
-          reject(err);
-        }
-      }, intervalMs);
-    });
-  };
+  // Stop progress polling when leaving the page.
+  useEffect(() => {
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+    return () => controller.abort();
+  }, []);
 
   const accountTypeOptions = useMemo(() => {
     const types = Array.from(
@@ -470,7 +464,7 @@ function AccountsPageContent() {
     setIsDeleting(true);
     try {
       const data = await deleteAccounts(tokens);
-      setAccounts(data.items);
+      applyAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
       toast.success(`已删除 ${data.removed ?? 0} 个账户`);
     } catch (error) {
@@ -490,13 +484,18 @@ function AccountsPageContent() {
       setRefreshingTokens((prev) => new Set([...prev, accessTokens[0]]));
       try {
         const { progress_id } = await refreshAccounts(accessTokens);
-        await pollRefreshProgress(progress_id, (p) => {
-          if (p.done && p.result) {
-            setAccounts(p.result.items);
-            setSelectedIds((prev) => prev.filter((id) => p.result!.items.some((item) => item.access_token === id)));
-          }
-        });
+        await pollUntilDone(
+          () => fetchRefreshProgress(progress_id),
+          (p) => {
+            if (p.done && p.result) {
+              applyAccounts(p.result.items);
+              setSelectedIds((prev) => prev.filter((id) => p.result!.items.some((item) => item.access_token === id)));
+            }
+          },
+          { signal: pollAbortRef.current?.signal },
+        );
       } catch (error) {
+        if (error instanceof PollAbortedError) return;
         toast.error(error instanceof Error ? error.message : "刷新账户失败");
       } finally {
         setRefreshingTokens((prev) => {
@@ -529,58 +528,43 @@ function AccountsPageContent() {
 
     try {
       const { progress_id } = await refreshAccounts(accessTokens);
-      const data = await new Promise<AccountRefreshResponse>((resolve, reject) => {
-        const pollTimer = setInterval(async () => {
-          try {
-            const p = await fetchRefreshProgress(progress_id);
-            if (p.done) {
-              clearInterval(pollTimer);
-              if (p.error) {
-                reject(new Error(p.error));
-                return;
-              }
-              if (!p.result) {
-                reject(new Error("刷新结果为空"));
-                return;
-              }
-              setProgress((prev) => ({
-                ...prev,
-                current: prev.total,
-                message: "刷新完成",
-              }));
-              setRefreshSummary(null);
-              resolve(p.result);
-            } else {
-              setProgress((prev) => ({
-                ...prev,
-                current: p.processed,
-              }));
-              const runningActive = baseActive + (p.status_counts?.["正常"] ?? 0);
-              const runningLimited = baseLimited + (p.status_counts?.["限流"] ?? 0);
-              const runningAbnormal = baseAbnormal + (p.status_counts?.["异常"] ?? 0);
-              const runningDisabled = baseDisabled + (p.status_counts?.["禁用"] ?? 0);
-              setRefreshSummary({
-                total: accounts.length,
-                active: runningActive,
-                limited: runningLimited,
-                abnormal: runningAbnormal,
-                disabled: runningDisabled,
-                quota: formatCompact(baseQuotaNum + (p.total_quota ?? 0)),
-              });
-            }
-          } catch (err) {
-            clearInterval(pollTimer);
-            reject(err);
-          }
-        }, 300);
-      });
+      const finished = await pollUntilDone(
+        () => fetchRefreshProgress(progress_id),
+        (p) => {
+          if (p.done) return;
+          setProgress((prev) => ({
+            ...prev,
+            current: p.processed,
+          }));
+          setRefreshSummary({
+            total: accounts.length,
+            active: baseActive + (p.status_counts?.["正常"] ?? 0),
+            limited: baseLimited + (p.status_counts?.["限流"] ?? 0),
+            abnormal: baseAbnormal + (p.status_counts?.["异常"] ?? 0),
+            disabled: baseDisabled + (p.status_counts?.["禁用"] ?? 0),
+            quota: formatCompact(baseQuotaNum + (p.total_quota ?? 0)),
+          });
+        },
+        { signal: pollAbortRef.current?.signal },
+      );
+      if (!finished.result) {
+        throw new Error("刷新结果为空");
+      }
+      const data = finished.result;
+      setProgress((prev) => ({
+        ...prev,
+        current: prev.total,
+        message: "刷新完成",
+      }));
+      setRefreshSummary(null);
 
-      setAccounts(data.items);
+      applyAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
 
       setTimeout(() => setProgress({ visible: false, current: 0, total: 0, message: "", email: "" }), 600);
       toast.success(`账号刷新完成: 正常 ${data.active ?? 0} 个`);
     } catch (error) {
+      if (error instanceof PollAbortedError) return;
       setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
       setRefreshSummary(null);
       toast.error(error instanceof Error ? error.message : "刷新失败");
@@ -607,36 +591,26 @@ function AccountsPageContent() {
 
     try {
       const { progress_id } = await reLoginAccounts(tokens);
-      await new Promise<void>((resolve, reject) => {
-        const pollTimer = setInterval(async () => {
-          try {
-            const p = await fetchReLoginProgress(progress_id);
-            if (p.done) {
-              clearInterval(pollTimer);
-              if (p.error) {
-                reject(new Error(p.error));
-                return;
-              }
-              resolve();
-            } else {
-              setProgress((prev) => ({
-                ...prev,
-                current: p.processed,
-                email: p.current_email ?? "",
-              }));
-            }
-          } catch (err) {
-            clearInterval(pollTimer);
-            reject(err);
-          }
-        }, 300);
-      });
+      await pollUntilDone(
+        () => fetchReLoginProgress(progress_id),
+        (p) => {
+          if (p.done) return;
+          setProgress((prev) => ({
+            ...prev,
+            current: p.processed,
+            email: p.current_email ?? "",
+          }));
+        },
+        { signal: pollAbortRef.current?.signal },
+      );
 
       const freshData = await fetchAccounts();
-      setAccounts(freshData.items);
+      applyAccounts(freshData.items);
+      setSelectedIds((prev) => prev.filter((id) => freshData.items.some((item) => item.access_token === id)));
       setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
       toast.success("账号恢复流程已完成");
     } catch (error) {
+      if (error instanceof PollAbortedError) return;
       setProgress({ visible: false, current: 0, total: 0, message: "", email: "" });
       toast.error(error instanceof Error ? error.message : "恢复异常账号失败");
     } finally {
@@ -678,7 +652,7 @@ function AccountsPageContent() {
         status: editStatus,
         proxy: editProxy.trim(),
       });
-      setAccounts(data.items);
+      applyAccounts(data.items);
       setSelectedIds((prev) => prev.filter((id) => data.items.some((item) => item.access_token === id)));
       setEditingAccount(null);
       toast.success("账号信息已更新");
@@ -702,9 +676,9 @@ function AccountsPageContent() {
       {/* 顶部标题与主要操作按钮栏 */}
       <section className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2.5">
-          <h1 className="font-mono text-base font-bold tracking-tight text-white">号池管理</h1>
-          <span className="rounded border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-[11px] text-zinc-400">
-            {filteredAccounts.length} / {accounts.length} ACCOUNTS
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">号池管理</h1>
+          <span className="rounded border border-border bg-foreground/[0.04] px-2 py-0.5 text-[11px] text-muted-foreground">
+            {filteredAccounts.length} / {accounts.length} 个账号
           </span>
         </div>
 
@@ -712,7 +686,7 @@ function AccountsPageContent() {
           <Button
             variant="outline"
             size="sm"
-            className="h-8 rounded-lg border-white/[0.08] bg-white/[0.03] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+            className="h-8 rounded-lg border-border bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground"
             onClick={() => void loadAccounts()}
             disabled={isLoading || isRefreshing || isDeleting}
           >
@@ -722,7 +696,7 @@ function AccountsPageContent() {
           <Button
             variant="outline"
             size="sm"
-            className="h-8 rounded-lg border-white/[0.08] bg-white/[0.03] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+            className="h-8 rounded-lg border-border bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground"
             onClick={() => void handleRefreshAccounts(accounts.map((item) => item.access_token))}
             disabled={isLoading || isRefreshing || isDeleting || accounts.length === 0}
           >
@@ -732,7 +706,7 @@ function AccountsPageContent() {
           <AccountImportDialog
             disabled={isLoading || isRefreshing || isDeleting}
             onImported={(items) => {
-              setAccounts(items);
+              applyAccounts(items);
               setSelectedIds([]);
               setPage(1);
             }}
@@ -740,7 +714,7 @@ function AccountsPageContent() {
           <Button
             variant="outline"
             size="sm"
-            className="h-8 rounded-lg border-white/[0.08] bg-white/[0.03] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+            className="h-8 rounded-lg border-border bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground"
             onClick={() => downloadTokens(accounts)}
             disabled={accounts.length === 0}
           >
@@ -752,9 +726,9 @@ function AccountsPageContent() {
 
       {/* 实时进度条 */}
       {progress.visible && (
-        <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#0c0e17]/90 p-3 shadow-lg backdrop-blur-md">
-          <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-zinc-300">
+        <div className="overflow-hidden rounded-xl border border-border bg-card p-3 shadow-sm ">
+          <div className="flex items-center justify-between text-xs ">
+            <span className="text-muted-foreground">
               {progress.message}
               {progress.email && <span className="ml-1 text-cyan-400">({progress.email})</span>}
             </span>
@@ -762,9 +736,9 @@ function AccountsPageContent() {
               {progress.current} / {progress.total}
             </span>
           </div>
-          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]">
+          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-foreground/[0.08]">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-cyan-500 transition-all duration-300"
+              className="h-full rounded-full bg-primary transition-all duration-300"
               style={{ width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%` }}
             />
           </div>
@@ -772,7 +746,7 @@ function AccountsPageContent() {
       )}
 
       {/* 合并后的号池状态卡片：左侧圆环占比，右侧一列展示所有数量 */}
-      <section className="flex flex-col items-center gap-6 rounded-xl border border-white/[0.08] bg-[#0c0e17]/80 p-4 shadow-sm backdrop-blur-md md:flex-row md:items-center">
+      <section className="flex flex-col items-center gap-6 rounded-xl border border-border bg-card p-4 shadow-sm md:flex-row md:items-center">
         {/* 左侧圆环 */}
         <div className="flex shrink-0 flex-col items-center">
           <AccountDonutRing
@@ -784,7 +758,7 @@ function AccountsPageContent() {
           />
         </div>
 
-        <div className="hidden h-32 w-px bg-white/[0.08] md:block" />
+        <div className="hidden h-32 w-px bg-foreground/[0.08] md:block" />
 
         {/* 右边展示所有数量 */}
         <div className="grid w-full flex-1 grid-cols-2 gap-2 sm:grid-cols-3">
@@ -798,18 +772,18 @@ function AccountsPageContent() {
             return (
               <div
                 key={item.key}
-                className="flex flex-col justify-between rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 transition hover:border-white/[0.12]"
+                className="flex flex-col justify-between rounded-lg border border-border bg-foreground/[0.02] p-2.5 transition hover:border-border"
               >
-                <div className="flex items-center justify-between text-zinc-400">
-                  <span className="font-mono text-[10px] uppercase tracking-wider">{item.label}</span>
+                <div className="flex items-center justify-between text-muted-foreground">
+                  <span className="text-[10px]">{item.label}</span>
                   <div className="flex items-center gap-1">
                     {pct !== null ? (
-                      <span className="font-mono text-[10px] text-zinc-500">{pct}%</span>
+                      <span className="text-[10px] text-subtle">{pct}%</span>
                     ) : null}
                     <span className={cn("size-1.5 rounded-full", item.dot)} />
                   </div>
                 </div>
-                <div className={cn("mt-1 font-mono text-lg font-bold tracking-tight", item.color)}>
+                <div className={cn("mt-1 text-lg font-bold tracking-tight", item.color)}>
                   {typeof value === "number" ? formatCompact(value) : value}
                 </div>
               </div>
@@ -819,19 +793,19 @@ function AccountsPageContent() {
       </section>
 
       {/* 可用模型展示条 */}
-      <section className="rounded-xl border border-white/[0.08] bg-[#0c0e17]/80 px-3 py-2 shadow-sm backdrop-blur-sm">
+      <section className="rounded-xl border border-border bg-card px-3 py-2 shadow-sm backdrop-blur-sm">
         <div className="flex flex-wrap items-center gap-1.5">
-          <div className="mr-1.5 flex items-center gap-1.5 text-xs font-mono font-medium text-zinc-300">
+          <div className="mr-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
             <span>可用模型</span>
-            <span className="text-[10px] text-zinc-500">({availableModels.length})</span>
+            <span className="text-[10px] text-subtle">({availableModels.length})</span>
           </div>
           {availableModels.length > 0 ? (
             availableModels.map((model) => (
               <button
                 key={model.id}
                 type="button"
-                className="inline-flex cursor-pointer items-center rounded border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[10.5px] font-mono text-zinc-300 transition hover:bg-white/[0.08] hover:text-white"
+                className="inline-flex cursor-pointer items-center rounded border border-border bg-foreground/[0.03] px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition hover:bg-foreground/[0.08] hover:text-foreground"
                 onClick={() => {
                   void navigator.clipboard.writeText(model.id);
                   toast.success(`模型名 ${model.id} 已复制`);
@@ -843,9 +817,9 @@ function AccountsPageContent() {
               </button>
             ))
           ) : isLoadingModels ? (
-            <span className="text-[11px] font-mono text-zinc-500">获取中...</span>
+            <span className="text-[11px] text-subtle">获取中...</span>
           ) : (
-            <span className="text-[11px] font-mono text-zinc-500">暂无可用模型</span>
+            <span className="text-[11px] text-subtle">暂无可用模型</span>
           )}
         </div>
       </section>
@@ -856,7 +830,7 @@ function AccountsPageContent() {
           {/* 左侧搜索与筛选 */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-full sm:w-60">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500" />
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-subtle" />
               <Input
                 value={query}
                 onChange={(e) => {
@@ -864,7 +838,7 @@ function AccountsPageContent() {
                   setPage(1);
                 }}
                 placeholder="搜索 token 或邮箱..."
-                className="h-8 rounded-lg border-white/[0.08] bg-[#050609] pl-8 font-mono text-xs text-zinc-200 placeholder-zinc-600 focus:border-cyan-500/50"
+                className="h-8 rounded-lg border-border bg-inset pl-8 text-xs text-foreground placeholder-subtle focus:border-cyan-500/50"
               />
             </div>
             <Select
@@ -874,12 +848,12 @@ function AccountsPageContent() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="h-8 w-[120px] rounded-lg border-white/[0.08] bg-[#050609] font-mono text-xs text-zinc-300">
+              <SelectTrigger className="h-8 w-[120px] rounded-lg border-border bg-inset text-xs text-muted-foreground">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="border-white/[0.1] bg-[#0c0e17] text-zinc-200">
+              <SelectContent className="border-border bg-card text-foreground">
                 {accountTypeOptions.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value} className="text-xs font-mono">
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs ">
                     {opt.label}
                   </SelectItem>
                 ))}
@@ -892,12 +866,12 @@ function AccountsPageContent() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="h-8 w-[120px] rounded-lg border-white/[0.08] bg-[#050609] font-mono text-xs text-zinc-300">
+              <SelectTrigger className="h-8 w-[120px] rounded-lg border-border bg-inset text-xs text-muted-foreground">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="border-white/[0.1] bg-[#0c0e17] text-zinc-200">
+              <SelectContent className="border-border bg-card text-foreground">
                 {accountStatusOptions.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value} className="text-xs font-mono">
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs ">
                     {opt.label}
                   </SelectItem>
                 ))}
@@ -907,14 +881,14 @@ function AccountsPageContent() {
 
           {/* 右侧批量快捷操作 */}
           {selectedIds.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2 py-1">
-              <span className="font-mono text-[11px] text-zinc-400 mr-1">
+            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-foreground/[0.03] px-2 py-1">
+              <span className="text-[11px] text-muted-foreground mr-1">
                 已选 {selectedIds.length} 项:
               </span>
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 rounded px-2 font-mono text-[11px] text-zinc-300 hover:bg-white/[0.08]"
+                className="h-6 rounded px-2 text-[11px] text-muted-foreground hover:bg-foreground/[0.08]"
                 onClick={() => void handleRefreshAccounts(selectedTokens)}
                 disabled={isRefreshing}
               >
@@ -924,7 +898,7 @@ function AccountsPageContent() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 rounded px-2 font-mono text-[11px] text-amber-400 hover:bg-amber-950/40"
+                className="h-6 rounded px-2 text-[11px] text-amber-400 hover:bg-amber-950/40"
                 onClick={() => void handleReLogin(selectedTokens)}
                 disabled={isRelogining}
               >
@@ -934,7 +908,7 @@ function AccountsPageContent() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 rounded px-2 font-mono text-[11px] text-rose-400 hover:bg-rose-950/40"
+                className="h-6 rounded px-2 text-[11px] text-rose-400 hover:bg-rose-950/40"
                 onClick={() => void handleDeleteTokens(selectedTokens)}
                 disabled={isDeleting}
               >
@@ -946,10 +920,10 @@ function AccountsPageContent() {
         </div>
 
         {/* 账户数据表格 */}
-        <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#0c0e17]/80 shadow-md backdrop-blur-sm">
+        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm backdrop-blur-sm">
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1020px] text-left">
-              <thead className="border-b border-white/[0.08] bg-white/[0.02] text-[10px] font-mono tracking-wider text-zinc-400 uppercase">
+              <thead className="border-b border-border bg-foreground/[0.02] text-[10px] tracking-wider text-muted-foreground uppercase">
                 <tr>
                   <th className="w-10 px-3 py-2">
                     <Checkbox
@@ -957,7 +931,7 @@ function AccountsPageContent() {
                       onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
                     />
                   </th>
-                  <th className="w-48 px-3 py-2">TOKEN</th>
+                  <th className="w-48 px-3 py-2">Token</th>
                   <th className="w-20 px-3 py-2">类型</th>
                   <th className="w-20 px-3 py-2">来源</th>
                   <th className="w-20 px-3 py-2">状态</th>
@@ -971,7 +945,7 @@ function AccountsPageContent() {
                   <th className="w-24 px-3 py-2 text-right">操作</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04] text-xs font-mono">
+              <tbody className="divide-y divide-white/[0.04] text-xs ">
                 {currentRows.map((account) => {
                   const status = statusMeta[account.status];
                   const StatusIcon = status.icon;
@@ -979,7 +953,7 @@ function AccountsPageContent() {
                   return (
                     <tr
                       key={account.access_token}
-                      className="transition-colors hover:bg-white/[0.02]"
+                      className="transition-colors hover:bg-foreground/[0.02]"
                     >
                       <td className="px-3 py-1.5">
                         <Checkbox
@@ -995,12 +969,12 @@ function AccountsPageContent() {
                       </td>
                       <td className="px-3 py-1.5">
                         <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-zinc-200">
+                          <span className="text-foreground">
                             {maskToken(account.access_token)}
                           </span>
                           <button
                             type="button"
-                            className="rounded p-1 text-zinc-500 transition hover:bg-white/[0.08] hover:text-zinc-200"
+                            className="rounded p-1 text-subtle transition hover:bg-foreground/[0.08] hover:text-foreground"
                             onClick={() => {
                               void navigator.clipboard.writeText(account.access_token);
                               toast.success("Token 已复制");
@@ -1012,12 +986,12 @@ function AccountsPageContent() {
                         </div>
                       </td>
                       <td className="px-3 py-1.5">
-                        <span className="rounded bg-white/[0.05] px-1.5 py-0.5 text-[10px] text-zinc-300">
+                        <span className="rounded bg-foreground/[0.05] px-1.5 py-0.5 text-[10px] text-muted-foreground">
                           {displayAccountType(account)}
                         </span>
                       </td>
                       <td className="px-3 py-1.5">
-                        <span className="text-[11px] text-zinc-400">
+                        <span className="text-[11px] text-muted-foreground">
                           {displayAccountSource(account)}
                         </span>
                       </td>
@@ -1033,11 +1007,11 @@ function AccountsPageContent() {
                         </span>
                       </td>
                       <td className="px-3 py-1.5">
-                        <div className="max-w-[190px] truncate text-zinc-300" title={account.email ?? ""}>
+                        <div className="max-w-[190px] truncate text-muted-foreground" title={account.email ?? ""}>
                           {account.email ?? "—"}
                         </div>
                       </td>
-                      <td className="px-3 py-1.5 text-zinc-400 text-[11px]">
+                      <td className="px-3 py-1.5 text-muted-foreground text-[11px]">
                         {(() => {
                           const raw = (account as any).created_at;
                           if (!raw) return "—";
@@ -1060,13 +1034,13 @@ function AccountsPageContent() {
                           {formatQuota(account)}
                         </span>
                       </td>
-                      <td className="px-3 py-1.5 text-[11px] text-zinc-400">
+                      <td className="px-3 py-1.5 text-[11px] text-muted-foreground">
                         {(() => {
                           const restore = formatRestoreAt(account.restore_at);
                           return (
                             <div>
-                              {restore.relative ? <div className="text-zinc-200">{restore.relative}</div> : null}
-                              <div className="text-zinc-500 text-[10px]">{restore.absolute}</div>
+                              {restore.relative ? <div className="text-foreground">{restore.relative}</div> : null}
+                              <div className="text-subtle text-[10px]">{restore.absolute}</div>
                             </div>
                           );
                         })()}
@@ -1076,7 +1050,7 @@ function AccountsPageContent() {
                           const inflight = account.image_inflight ?? 0;
                           return (
                             <span
-                              className={inflight > 0 ? "font-semibold text-amber-400" : "text-zinc-500"}
+                              className={inflight > 0 ? "font-semibold text-amber-400" : "text-subtle"}
                             >
                               {inflight}
                             </span>
@@ -1086,10 +1060,10 @@ function AccountsPageContent() {
                       <td className="px-3 py-1.5 text-emerald-400/90">{account.success}</td>
                       <td className="px-3 py-1.5 text-rose-400/90">{account.fail}</td>
                       <td className="px-3 py-1.5 text-right">
-                        <div className="flex items-center justify-end gap-1 text-zinc-400">
+                        <div className="flex items-center justify-end gap-1 text-muted-foreground">
                           <button
                             type="button"
-                            className="rounded p-1 hover:bg-white/[0.08] hover:text-zinc-200"
+                            className="rounded p-1 hover:bg-foreground/[0.08] hover:text-foreground"
                             onClick={() => openEditDialog(account)}
                             disabled={isUpdating}
                             title="编辑状态/代理"
@@ -1098,7 +1072,7 @@ function AccountsPageContent() {
                           </button>
                           <button
                             type="button"
-                            className="rounded p-1 hover:bg-white/[0.08] hover:text-cyan-400"
+                            className="rounded p-1 hover:bg-foreground/[0.08] hover:text-cyan-400"
                             onClick={() => void handleRefreshAccounts([account.access_token])}
                             disabled={isRefreshing || refreshingTokens.has(account.access_token)}
                             title="刷新该账号"
@@ -1128,15 +1102,15 @@ function AccountsPageContent() {
             </table>
 
             {!isLoading && currentRows.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center font-mono">
-                <Search className="size-6 text-zinc-600" />
-                <p className="text-xs text-zinc-400">没有符合筛选条件的账户</p>
+              <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center ">
+                <Search className="size-6 text-subtle" />
+                <p className="text-xs text-muted-foreground">没有符合筛选条件的账户</p>
               </div>
             ) : null}
           </div>
 
           {/* 表格底部分页栏 */}
-          <div className="flex items-center justify-between border-t border-white/[0.06] bg-white/[0.01] px-4 py-2 font-mono text-xs text-zinc-400">
+          <div className="flex items-center justify-between border-t border-border bg-foreground/[0.01] px-4 py-2 text-xs text-muted-foreground">
             <div className="text-[11px]">
               第 {filteredAccounts.length === 0 ? 0 : startIndex + 1} -{" "}
               {Math.min(startIndex + Number(pageSize), filteredAccounts.length)} 条 / 共{" "}
@@ -1144,7 +1118,7 @@ function AccountsPageContent() {
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-zinc-500">
+              <span className="text-[11px] text-subtle">
                 {safePage} / {pageCount} 页
               </span>
               <Select
@@ -1154,20 +1128,20 @@ function AccountsPageContent() {
                   setPage(1);
                 }}
               >
-                <SelectTrigger className="h-7 w-[96px] rounded border-white/[0.08] bg-[#050609] text-[11px] text-zinc-300">
+                <SelectTrigger className="h-7 w-[96px] rounded border-border bg-inset text-[11px] text-muted-foreground">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="border-white/[0.1] bg-[#0c0e17] text-zinc-200">
-                  <SelectItem value="10" className="text-xs font-mono">10 / 页</SelectItem>
-                  <SelectItem value="20" className="text-xs font-mono">20 / 页</SelectItem>
-                  <SelectItem value="50" className="text-xs font-mono">50 / 页</SelectItem>
-                  <SelectItem value="100" className="text-xs font-mono">100 / 页</SelectItem>
+                <SelectContent className="border-border bg-card text-foreground">
+                  <SelectItem value="10" className="text-xs ">10 / 页</SelectItem>
+                  <SelectItem value="20" className="text-xs ">20 / 页</SelectItem>
+                  <SelectItem value="50" className="text-xs ">50 / 页</SelectItem>
+                  <SelectItem value="100" className="text-xs ">100 / 页</SelectItem>
                 </SelectContent>
               </Select>
               <Button
                 variant="outline"
                 size="icon"
-                className="size-7 rounded border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:bg-white/[0.08]"
+                className="size-7 rounded border-border bg-foreground/[0.03] text-muted-foreground hover:bg-foreground/[0.08]"
                 disabled={safePage <= 1}
                 onClick={() => setPage((prev) => Math.max(1, prev - 1))}
               >
@@ -1175,7 +1149,7 @@ function AccountsPageContent() {
               </Button>
               {paginationItems.map((item, index) =>
                 item === "..." ? (
-                  <span key={`ellipsis-${index}`} className="px-1 text-zinc-600">
+                  <span key={`ellipsis-${index}`} className="px-1 text-subtle">
                     ...
                   </span>
                 ) : (
@@ -1183,10 +1157,10 @@ function AccountsPageContent() {
                     key={item}
                     variant={item === safePage ? "default" : "outline"}
                     className={cn(
-                      "size-7 rounded text-[11px] font-mono",
+                      "size-7 rounded text-[11px] ",
                       item === safePage
-                        ? "bg-white/[0.15] text-white border border-white/[0.2]"
-                        : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.08] hover:text-white",
+                        ? "bg-foreground/[0.15] text-foreground border border-border"
+                        : "border-border bg-foreground/[0.03] text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground",
                     )}
                     onClick={() => setPage(item)}
                   >
@@ -1197,7 +1171,7 @@ function AccountsPageContent() {
               <Button
                 variant="outline"
                 size="icon"
-                className="size-7 rounded border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:bg-white/[0.08]"
+                className="size-7 rounded border-border bg-foreground/[0.03] text-muted-foreground hover:bg-foreground/[0.08]"
                 disabled={safePage >= pageCount}
                 onClick={() => setPage((prev) => Math.min(pageCount, prev + 1))}
               >
@@ -1210,25 +1184,25 @@ function AccountsPageContent() {
 
       {/* 编辑账户对话框 */}
       <Dialog open={Boolean(editingAccount)} onOpenChange={(open) => (!open ? setEditingAccount(null) : null)}>
-        <DialogContent showCloseButton={false} className="rounded-xl border border-white/[0.1] bg-[#0c0e17] p-5 text-zinc-200">
-          <DialogHeader className="gap-1.5 font-mono">
-            <DialogTitle className="text-white text-sm">编辑账户配置</DialogTitle>
-            <DialogDescription className="text-xs text-zinc-400">
+        <DialogContent showCloseButton={false} className="rounded-xl border border-border bg-card p-5 text-foreground">
+          <DialogHeader className="gap-1.5 ">
+            <DialogTitle className="text-foreground text-sm">编辑账户配置</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
               手动配置该账号的运行状态和专属网络代理。
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 font-mono text-xs pt-2">
+          <div className="space-y-3 text-xs pt-2">
             <div className="space-y-1.5">
-              <label className="text-zinc-400">运行状态</label>
+              <label className="text-muted-foreground">运行状态</label>
               <Select value={editStatus} onValueChange={(value) => setEditStatus(value as AccountStatus)}>
-                <SelectTrigger className="h-8 rounded-lg border-white/[0.08] bg-[#050609] text-xs">
+                <SelectTrigger className="h-8 rounded-lg border-border bg-inset text-xs">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="border-white/[0.1] bg-[#0c0e17] text-zinc-200">
+                <SelectContent className="border-border bg-card text-foreground">
                   {accountStatusOptions
                     .filter((opt) => opt.value !== "all")
                     .map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value} className="text-xs font-mono">
+                      <SelectItem key={opt.value} value={opt.value} className="text-xs ">
                         {opt.label}
                       </SelectItem>
                     ))}
@@ -1236,18 +1210,18 @@ function AccountsPageContent() {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <label className="text-zinc-400">专属代理 (可选)</label>
+              <label className="text-muted-foreground">专属代理 (可选)</label>
               <div className="flex gap-2">
                 <Input
                   value={editProxy}
                   onChange={(e) => setEditProxy(e.target.value)}
                   placeholder="留空走全局代理，如 http://127.0.0.1:7890"
-                  className="h-8 rounded-lg border-white/[0.08] bg-[#050609] text-xs font-mono text-zinc-200"
+                  className="h-8 rounded-lg border-border bg-inset text-xs text-foreground"
                 />
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-8 shrink-0 rounded-lg border-white/[0.08] bg-white/[0.04] text-xs font-mono text-zinc-300 hover:bg-white/[0.08]"
+                  className="h-8 shrink-0 rounded-lg border-border bg-foreground/[0.04] text-xs text-muted-foreground hover:bg-foreground/[0.08]"
                   onClick={() => void handleTestAccountProxy()}
                   disabled={isTestingProxy}
                 >
@@ -1257,11 +1231,11 @@ function AccountsPageContent() {
               </div>
             </div>
           </div>
-          <DialogFooter className="gap-2 pt-3 font-mono">
+          <DialogFooter className="gap-2 pt-3 ">
             <Button
               variant="outline"
               size="sm"
-              className="rounded border-white/[0.1] bg-white/[0.04] text-xs text-zinc-300 hover:bg-white/[0.08]"
+              className="rounded border-border bg-foreground/[0.04] text-xs text-muted-foreground hover:bg-foreground/[0.08]"
               onClick={() => setEditingAccount(null)}
               disabled={isUpdating}
             >
@@ -1289,7 +1263,7 @@ export default function AccountsPage() {
   if (isCheckingAuth || !session || session.role !== "admin") {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <LoaderCircle className="size-5 animate-spin text-zinc-500" />
+        <LoaderCircle className="size-5 animate-spin text-subtle" />
       </div>
     );
   }

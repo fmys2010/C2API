@@ -24,14 +24,14 @@ export default function DebugPage() {
 
   if (isCheckingAuth || !session || session.role !== "admin") {
     return (
-      <div className="flex min-h-[calc(100vh-49px)] items-center justify-center">
+      <div className="flex min-h-[calc(100dvh-var(--shell-offset))] items-center justify-center">
         <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   return (
-    <Tabs defaultValue="skills" className="mx-auto flex min-h-[calc(100vh-49px)] w-full max-w-[1600px] flex-col gap-4 px-4 pt-3 pb-6 md:px-8">
+    <Tabs defaultValue="skills" className="mx-auto flex min-h-[calc(100dvh-var(--shell-offset))] w-full max-w-[1600px] flex-col gap-4 px-4 pt-3 pb-6 md:px-8">
       <TabsList variant="line" className="w-full">
         {tabs.map(({ value, title }) => (
           <TabsTrigger key={value} value={value}>

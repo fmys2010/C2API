@@ -39,17 +39,17 @@ function MarkdownResult({ content }: { content: string }) {
       components={{
         a: ({ className, ...props }) => <a className={cn("font-medium text-blue-700 underline decoration-blue-300 underline-offset-4 hover:text-blue-900 dark:text-blue-300 dark:decoration-blue-700", className)} target="_blank" rel="noreferrer" {...props} />,
         h1: ({ className, ...props }) => <h1 className={cn("mt-8 mb-4 text-2xl font-semibold tracking-tight text-stone-950 first:mt-0 dark:text-stone-50", className)} {...props} />,
-        h2: ({ className, ...props }) => <h2 className={cn("mt-8 mb-4 border-b border-stone-200 pb-2 text-xl font-semibold tracking-tight text-stone-950 first:mt-0 dark:border-white/10 dark:text-stone-50", className)} {...props} />,
+        h2: ({ className, ...props }) => <h2 className={cn("mt-8 mb-4 border-b border-stone-200 pb-2 text-xl font-semibold tracking-tight text-stone-950 first:mt-0 dark:border-border dark:text-stone-50", className)} {...props} />,
         h3: ({ className, ...props }) => <h3 className={cn("mt-6 mb-3 text-lg font-semibold text-stone-900 dark:text-stone-100", className)} {...props} />,
         p: ({ className, ...props }) => <p className={cn("my-4 leading-8 text-stone-800 dark:text-stone-200", className)} {...props} />,
         ul: ({ className, ...props }) => <ul className={cn("my-4 list-disc space-y-2 pl-6 leading-7 text-stone-800 dark:text-stone-200", className)} {...props} />,
         ol: ({ className, ...props }) => <ol className={cn("my-4 list-decimal space-y-2 pl-6 leading-7 text-stone-800 dark:text-stone-200", className)} {...props} />,
-        blockquote: ({ className, ...props }) => <blockquote className={cn("my-5 border-l-4 border-stone-300 bg-white/70 py-3 pr-4 pl-5 text-stone-700 dark:border-white/20 dark:bg-white/[0.04] dark:text-stone-300", className)} {...props} />,
-        code: ({ className, ...props }) => <code className={cn("rounded bg-stone-100 px-1.5 py-0.5 font-mono text-[0.9em] text-stone-800 dark:bg-white/10 dark:text-stone-100", className)} {...props} />,
-        pre: ({ className, ...props }) => <pre className={cn("my-5 overflow-x-auto rounded-xl border border-stone-200 bg-stone-950 p-4 text-sm text-stone-50 dark:border-white/10", className)} {...props} />,
-        table: ({ className, ...props }) => <div className="my-5 overflow-x-auto rounded-xl border border-stone-200 dark:border-white/10"><table className={cn("w-full border-collapse text-sm", className)} {...props} /></div>,
-        th: ({ className, ...props }) => <th className={cn("border-b border-stone-200 bg-stone-100 px-3 py-2 text-left font-semibold dark:border-white/10 dark:bg-white/10", className)} {...props} />,
-        td: ({ className, ...props }) => <td className={cn("border-b border-stone-100 px-3 py-2 align-top dark:border-white/10", className)} {...props} />,
+        blockquote: ({ className, ...props }) => <blockquote className={cn("my-5 border-l-4 border-stone-300 bg-white/70 py-3 pr-4 pl-5 text-stone-700 dark:border-border dark:bg-foreground/[0.04] dark:text-stone-300", className)} {...props} />,
+        code: ({ className, ...props }) => <code className={cn("rounded bg-stone-100 px-1.5 py-0.5 text-[0.9em] text-stone-800 dark:bg-white/10 dark:text-stone-100", className)} {...props} />,
+        pre: ({ className, ...props }) => <pre className={cn("my-5 overflow-x-auto rounded-xl border border-stone-200 bg-stone-950 p-4 text-sm text-stone-50 dark:border-border", className)} {...props} />,
+        table: ({ className, ...props }) => <div className="my-5 overflow-x-auto rounded-xl border border-stone-200 dark:border-border"><table className={cn("w-full border-collapse text-sm", className)} {...props} /></div>,
+        th: ({ className, ...props }) => <th className={cn("border-b border-stone-200 bg-stone-100 px-3 py-2 text-left font-semibold dark:border-border dark:bg-white/10", className)} {...props} />,
+        td: ({ className, ...props }) => <td className={cn("border-b border-stone-100 px-3 py-2 align-top dark:border-border", className)} {...props} />,
       }}
     >
       {content}
@@ -92,13 +92,13 @@ export function SearchPanel() {
   };
 
   return (
-    <section className={cn("mx-auto flex min-h-[calc(100vh-142px)] w-full max-w-6xl flex-col px-4 transition-all", searched ? "py-5" : "justify-center")}>
+    <section className={cn("mx-auto flex min-h-[calc(100dvh-var(--shell-offset))] w-full max-w-6xl flex-col px-4 transition-all", searched ? "py-5" : "justify-center")}>
       <div className={cn("mx-auto w-full max-w-3xl", searched && "sticky top-3 z-10")}>
         {!searched ? (
           <p className="mb-5 text-center text-sm text-stone-500 dark:text-stone-400">利用ChatGPT先进的网页搜索功能进行搜索</p>
         ) : null}
         <form
-          className={cn("mx-auto flex w-full items-center gap-3 rounded-full border border-stone-200 bg-white/95 backdrop-blur transition-all dark:border-white/10 dark:bg-stone-950/90", searched ? "px-4 py-2" : "px-5 py-3")}
+          className={cn("mx-auto flex w-full items-center gap-3 rounded-full border border-stone-200 bg-white/95 backdrop-blur transition-all dark:border-border dark:bg-stone-950/90", searched ? "px-4 py-2" : "px-5 py-3")}
           onSubmit={(event) => {
             event.preventDefault();
             void runSearch();
@@ -119,7 +119,7 @@ export function SearchPanel() {
 
       {searched ? <div className="mx-auto w-full max-w-6xl flex-1 pt-6">
         {loading ? (
-          <div className="mx-auto flex max-w-3xl items-center gap-3 rounded-2xl border border-stone-200 bg-white/75 px-4 py-3 text-sm text-stone-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-stone-300">
+          <div className="mx-auto flex max-w-3xl items-center gap-3 rounded-2xl border border-stone-200 bg-white/75 px-4 py-3 text-sm text-stone-600 dark:border-border dark:bg-foreground/[0.03] dark:text-stone-300">
             <LoaderCircle className="size-4 animate-spin" />
             搜索中... {(elapsedMs / 1000).toFixed(1)}s
           </div>
@@ -131,9 +131,9 @@ export function SearchPanel() {
           <article className="grid gap-8 pb-12 lg:grid-cols-[minmax(0,1fr)_320px]">
             <div className="min-w-0">
               <div className="mb-5 flex flex-wrap items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
-                <span className="rounded-full border border-stone-200 bg-white px-3 py-1 dark:border-white/10 dark:bg-white/[0.03]">{result.status || "done"}</span>
-                <span className="rounded-full border border-stone-200 bg-white px-3 py-1 dark:border-white/10 dark:bg-white/[0.03]">{(elapsedMs / 1000).toFixed(2)}s</span>
-                <span className="rounded-full border border-stone-200 bg-white px-3 py-1 dark:border-white/10 dark:bg-white/[0.03]">{result.sources?.length || 0} sources</span>
+                <span className="rounded-full border border-stone-200 bg-white px-3 py-1 dark:border-border dark:bg-foreground/[0.03]">{result.status || "done"}</span>
+                <span className="rounded-full border border-stone-200 bg-white px-3 py-1 dark:border-border dark:bg-foreground/[0.03]">{(elapsedMs / 1000).toFixed(2)}s</span>
+                <span className="rounded-full border border-stone-200 bg-white px-3 py-1 dark:border-border dark:bg-foreground/[0.03]">{result.sources?.length || 0} sources</span>
               </div>
               <div className="text-[15px]">
                 <MarkdownResult content={normalizeMarkdown(result.answer || "")} />

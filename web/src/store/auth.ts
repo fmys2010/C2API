@@ -40,7 +40,8 @@ function normalizeSession(value: unknown, fallbackKey = ""): StoredAuthSession |
 }
 
 export function getDefaultRouteForRole(role: AuthRole) {
-  return "/accounts";
+  // /accounts is admin-only; sending other roles there makes the auth guard redirect forever.
+  return role === "admin" ? "/accounts" : "/image";
 }
 
 export async function getStoredAuthKey() {

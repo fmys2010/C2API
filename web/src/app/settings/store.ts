@@ -249,8 +249,19 @@ function normalizeFiles(items: CPARemoteFile[]) {
   return files;
 }
 
+function isSameConfig(a: SettingsConfig | null, b: SettingsConfig | null) {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** True when the form holds edits that have not been saved to the server. */
+export function selectIsConfigDirty(state: { config: SettingsConfig | null; savedConfig: SettingsConfig | null }) {
+  return Boolean(state.config && state.savedConfig) && !isSameConfig(state.config, state.savedConfig);
+}
+
 type SettingsStore = {
   config: SettingsConfig | null;
+  /** Last config known to match the server; the baseline for unsaved-change detection. */
+  savedConfig: SettingsConfig | null;
   isLoadingConfig: boolean;
   isSavingConfig: boolean;
   backups: BackupItem[];
@@ -287,6 +298,7 @@ type SettingsStore = {
   initialize: () => Promise<void>;
   loadConfig: () => Promise<void>;
   saveConfig: () => Promise<boolean>;
+  discardConfigChanges: () => void;
   loadBackups: (silent?: boolean) => Promise<void>;
   runBackup: () => Promise<void>;
   removeBackup: (key: string) => Promise<void>;
@@ -345,6 +357,7 @@ type SettingsStore = {
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   config: null,
+  savedConfig: null,
   isLoadingConfig: true,
   isSavingConfig: false,
   backups: [],
@@ -395,13 +408,13 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   loadConfig: async () => {
-    set({ isLoadingConfig: true });
+    // Re-entering the page refreshes in the background instead of swapping the form for a spinner.
+    set({ isLoadingConfig: !get().config });
     try {
       const data = await fetchSettingsConfig();
       const normalized = normalizeConfig(data.config);
-      set({
-        config: normalized,
-      });
+      // Never replace unsaved edits with server data; only move the baseline.
+      set(selectIsConfigDirty(get()) ? { savedConfig: normalized } : { config: normalized, savedConfig: normalized });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载系统配置失败");
     } finally {
@@ -410,8 +423,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   saveConfig: async () => {
-    const { config } = get();
-    if (!config) {
+    const { config, isSavingConfig } = get();
+    if (!config || isSavingConfig) {
       return false;
     }
 
@@ -494,11 +507,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
           passphrase: String(config.backup?.passphrase || "").trim(),
         },
       });
-      set({
-        config: normalizeConfig(data.config),
-      });
+      const saved = normalizeConfig(data.config);
+      // Edits typed while the request was in flight must survive its response.
+      const editedDuringSave = get().config !== config;
+      set(editedDuringSave ? { savedConfig: saved } : { config: saved, savedConfig: saved });
       window.dispatchEvent(new Event("third-party-apps-updated"));
-      toast.success("配置已保存");
+      toast.success(editedDuringSave ? "配置已保存，保存期间的新改动尚未保存" : "配置已保存");
       return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存系统配置失败");
@@ -506,6 +520,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     } finally {
       set({ isSavingConfig: false });
     }
+  },
+
+  discardConfigChanges: () => {
+    set((state) => ({ config: state.savedConfig }));
   },
 
   setRefreshAccountIntervalMinute: (value) => {
