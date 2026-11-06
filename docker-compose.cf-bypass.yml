@@ -1,17 +1,17 @@
 # ==============================================================================
-# ChatGPT2API - Docker Compose (Cloudflare 绕过增强版)
+# C2API - Docker Compose (Cloudflare 绕过增强版)
 # 适用场景: 国内/风控严重 IP、频繁触发 Cloudflare 5秒盾、Turnstile 人机核验环境
 # 包含组件:
 #   1. flaresolverr: 全自动无头浏览器，实时破解 Cloudflare 盾并下发 cf_clearance cookies
 #   2. warp-proxy: Cloudflare 官方 WARP 节点，提供纯净原生出口 IP
 #   3. privoxy: 高性能 HTTP 代理转发层
-#   4. app: ChatGPT2API 主程序 (纯 SQLite 存储 + 前后端一体化)
+#   4. app: C2API 主程序 (纯 SQLite 存储 + 前后端一体化)
 # ==============================================================================
 
 services:
   init-config:
     image: python:3.12-alpine
-    container_name: chatgpt2api-init-config
+    container_name: c2api-init-config
     working_dir: /app
     volumes:
       - ./config.json:/app/config.json
@@ -35,7 +35,7 @@ services:
 
   warp-proxy:
     image: caomingjun/warp:latest
-    container_name: chatgpt2api-warp-proxy
+    container_name: c2api-warp-proxy
     restart: unless-stopped
     environment:
       WARP_SLEEP: "2"
@@ -56,7 +56,7 @@ services:
 
   privoxy:
     image: vimagick/privoxy:latest
-    container_name: chatgpt2api-privoxy
+    container_name: c2api-privoxy
     restart: unless-stopped
     depends_on:
       warp-proxy:
@@ -72,7 +72,7 @@ services:
 
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: chatgpt2api-flaresolverr
+    container_name: c2api-flaresolverr
     restart: unless-stopped
     environment:
       LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
@@ -88,8 +88,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: chatgpt2api:cf-bypass
-    container_name: chatgpt2api-cf-bypass
+    image: ghcr.io/fmys2010/c2api:main
+    container_name: c2api-cf-bypass
     restart: unless-stopped
     depends_on:
       init-config:

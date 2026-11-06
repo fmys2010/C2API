@@ -1,4 +1,4 @@
-<h1 align="center">ChatGPT2API</h1>
+<h1 align="center">C2API</h1>
 
 
 <p align="center">ChatGPT2API 主要是对 ChatGPT 官网相关能力进行逆向整理与封装，提供面向 ChatGPT 图片生成、图片编辑、多图组图编辑场景的 OpenAI 兼容图片 API / 代理，并集成在线画图、号池管理、多种账号导入方式与 Docker 自托管部署能力。</p>
@@ -50,7 +50,7 @@
 ### Docker 运行
 
 ```bash
-git clone git@github.com:basketikun/chatgpt2api.git
+git clone https://github.com/fmys2010/C2API.git
 cd chatgpt2api
 docker compose up -d
 ```
@@ -67,7 +67,7 @@ docker compose up -d
 
 ```bash
 cp .env.example .env
-docker compose -f docker-compose.warp.yml up -d --build
+docker compose -f docker-compose.cf-bypass.yml up -d
 ```
 
 该 compose 会启动：
@@ -87,7 +87,7 @@ docker compose -f docker-compose.warp.yml up -d --build
 启动后端：
 
 ```bash
-git clone git@github.com:basketikun/chatgpt2api.git
+git clone https://github.com/fmys2010/C2API.git
 cd chatgpt2api
 uv sync
 uv run main.py
@@ -104,7 +104,7 @@ bun run dev
 后续更新新版本：
 
 ```bash
-docker pull ghcr.io/basketikun/chatgpt2api:latest
+docker pull ghcr.io/fmys2010/c2api:main
 docker-compose down
 docker-compose up -d
 
@@ -112,19 +112,16 @@ docker-compose up -d
 
 ### 存储后端配置
 
-支持通过环境变量 `STORAGE_BACKEND` 切换存储方式：
+项目已升级为全面采用轻量级 **SQLite** 原生存储：
 
-- `json` - 本地 JSON 文件（默认）
-- `sqlite` - 本地 SQLite 数据库
-- `postgres` - 外部 PostgreSQL（需配置 `DATABASE_URL`）
-- `git` - Git 私有仓库（需配置 `GIT_REPO_URL` 和 `GIT_TOKEN`）
-
-示例：使用 PostgreSQL
+- 数据库文件默认持久化于本地 `./data/accounts.db`。
+- 支持并发连接池与 WAL 模式，开箱即用。
+- 可通过环境变量 `DATABASE_URL` 自定义 SQLite 文件路径：
 
 ```yaml
 environment:
-  - STORAGE_BACKEND=postgres
-  - DATABASE_URL=postgresql://user:password@host:5432/dbname
+  - STORAGE_BACKEND=sqlite
+  - DATABASE_URL=sqlite:////app/data/accounts.db
 ```
 
 ## 功能

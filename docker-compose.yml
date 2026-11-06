@@ -1,5 +1,5 @@
 # ==============================================================================
-# ChatGPT2API - Docker Compose (标准版本 / 不带 CF 绕过)
+# C2API - Docker Compose (标准版本 / 不带 CF 绕过)
 # 适用场景: 海外 VPS、已有透明/全局代理环境、或无需 Cloudflare 5秒盾/Turnstile 穿透的直连部署
 # ==============================================================================
 
@@ -8,8 +8,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: chatgpt2api:latest
-    container_name: chatgpt2api
+    image: ghcr.io/fmys2010/c2api:main
+    container_name: c2api
     restart: unless-stopped
     ports:
       - "${PORT:-8000}:80"

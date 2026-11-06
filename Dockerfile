@@ -27,13 +27,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # 安装系统依赖
-# - git: Git 存储后端需要
-# - libpq-dev: PostgreSQL 客户端库
-# - gcc: 编译 psycopg2-binary 需要
+# - curl, ca-certificates: 健康检查与基础网络依赖
+# - openssl: 安全通信与加解密
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    libpq-dev \
-    gcc \
+    curl \
+    ca-certificates \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
