@@ -15,7 +15,7 @@ COPY web ./
 RUN NEXT_PUBLIC_APP_VERSION="$(cat /app/VERSION)" npm run build
 
 
-FROM --platform=$TARGETPLATFORM python:3.13-slim AS app
+FROM --platform=$TARGETPLATFORM python:3.12-slim AS app
 
 ARG TARGETPLATFORM
 ARG TARGETARCH

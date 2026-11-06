@@ -2,14 +2,14 @@ import json
 
 import pytest
 
-from services.storage.database_storage import (
+from services.storage.sqlite_storage import (
     AccountModel,
     AuthKeyModel,
-    DatabaseStorageBackend,
+    SQLiteStorageBackend,
 )
 
 
-def _account_rows(backend: DatabaseStorageBackend) -> dict[str, AccountModel]:
+def _account_rows(backend: SQLiteStorageBackend) -> dict[str, AccountModel]:
     session = backend.Session()
     try:
         return {
@@ -21,7 +21,7 @@ def _account_rows(backend: DatabaseStorageBackend) -> dict[str, AccountModel]:
 
 
 def test_save_accounts_preserves_existing_rows_and_updates_only_changed_data(tmp_path):
-    backend = DatabaseStorageBackend(f"sqlite:///{tmp_path / 'accounts.db'}")
+    backend = SQLiteStorageBackend(tmp_path / "accounts.db")
     backend.save_accounts(
         [
             {"access_token": "token-a", "name": "A"},
@@ -50,7 +50,7 @@ def test_save_accounts_preserves_existing_rows_and_updates_only_changed_data(tmp
 
 
 def test_save_accounts_deletes_only_rows_missing_from_new_snapshot(tmp_path):
-    backend = DatabaseStorageBackend(f"sqlite:///{tmp_path / 'accounts.db'}")
+    backend = SQLiteStorageBackend(tmp_path / "accounts.db")
     backend.save_accounts(
         [
             {"access_token": "token-a", "name": "A"},
@@ -68,7 +68,7 @@ def test_save_accounts_deletes_only_rows_missing_from_new_snapshot(tmp_path):
 
 
 def test_save_accounts_rejects_duplicate_tokens_and_rolls_back(tmp_path):
-    backend = DatabaseStorageBackend(f"sqlite:///{tmp_path / 'accounts.db'}")
+    backend = SQLiteStorageBackend(tmp_path / "accounts.db")
     original = {"access_token": "token-a", "name": "A"}
     backend.save_accounts([original])
 
@@ -85,7 +85,7 @@ def test_save_accounts_rejects_duplicate_tokens_and_rolls_back(tmp_path):
 
 
 def test_save_accounts_rejects_duplicate_new_tokens_and_rolls_back(tmp_path):
-    backend = DatabaseStorageBackend(f"sqlite:///{tmp_path / 'accounts.db'}")
+    backend = SQLiteStorageBackend(tmp_path / "accounts.db")
     original = {"access_token": "token-a", "name": "A"}
     backend.save_accounts([original])
 
@@ -103,7 +103,7 @@ def test_save_accounts_rejects_duplicate_new_tokens_and_rolls_back(tmp_path):
 
 
 def test_save_auth_keys_preserves_ids_with_target_key_mapping(tmp_path):
-    backend = DatabaseStorageBackend(f"sqlite:///{tmp_path / 'auth-keys.db'}")
+    backend = SQLiteStorageBackend(tmp_path / "auth-keys.db")
     backend.save_auth_keys(
         [
             {"id": "key-a", "name": "A"},
@@ -143,7 +143,7 @@ def test_save_auth_keys_preserves_ids_with_target_key_mapping(tmp_path):
 
 
 def test_save_auth_keys_rejects_duplicate_ids_and_rolls_back(tmp_path):
-    backend = DatabaseStorageBackend(f"sqlite:///{tmp_path / 'auth-keys.db'}")
+    backend = SQLiteStorageBackend(tmp_path / "auth-keys.db")
     original = {"id": "key-a", "name": "A"}
     backend.save_auth_keys([original])
 

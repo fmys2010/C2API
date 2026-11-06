@@ -7,7 +7,7 @@ from pathlib import Path
 
 from services.account_service import AccountService
 from services.model_service import ModelCatalogService
-from services.storage.json_storage import JSONStorageBackend
+from services.storage.sqlite_storage import SQLiteStorageBackend
 
 
 def model_list(*model_ids: str) -> dict:
@@ -51,7 +51,7 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.accounts = AccountService(
-            JSONStorageBackend(Path(self.temp_dir.name) / "accounts.json")
+            SQLiteStorageBackend(Path(self.temp_dir.name) / "accounts.db")
         )
         self.accounts.add_account_items(
             [

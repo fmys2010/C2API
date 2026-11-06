@@ -9,12 +9,11 @@ from unittest import mock
 from services.account_service import AccountService
 from services.model_service import ModelRoute, ModelUnavailableError
 from services.protocol import (
-    anthropic_v1_messages,
     conversation,
     openai_v1_chat_complete,
     openai_v1_response,
 )
-from services.storage.json_storage import JSONStorageBackend
+from services.storage.sqlite_storage import SQLiteStorageBackend
 
 
 class TextAccountRoutingTests(unittest.TestCase):
@@ -22,7 +21,7 @@ class TextAccountRoutingTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.service = AccountService(
-            JSONStorageBackend(Path(self.temp_dir.name) / "accounts.json")
+            SQLiteStorageBackend(Path(self.temp_dir.name) / "accounts.db")
         )
         self.service.add_account_items(
             [
@@ -114,23 +113,6 @@ class TextProtocolRoutingTests(unittest.TestCase):
             openai_v1_response.handle(body)
 
         backend.assert_called_once_with("pro-response")
-
-    def test_anthropic_messages_passes_requested_model_to_account_selector(self) -> None:
-        with (
-            mock.patch.object(
-                anthropic_v1_messages.account_service,
-                "get_text_access_token",
-                return_value="pro",
-            ) as selector,
-            mock.patch.object(anthropic_v1_messages, "OpenAIBackendAPI"),
-        ):
-            request = anthropic_v1_messages.message_request({
-                "model": "pro-anthropic",
-                "messages": [{"role": "user", "content": "route anthropic"}],
-            })
-
-        self.assertEqual(request.model, "pro-anthropic")
-        selector.assert_called_once_with(model="pro-anthropic")
 
     def test_invalid_token_retry_keeps_requested_model_filter(self) -> None:
         initial_backend = SimpleNamespace(access_token="bad")

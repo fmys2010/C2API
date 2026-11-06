@@ -12,7 +12,7 @@ from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.config import config
 from services.openai_backend_api import InvalidAccessTokenError
-from services.storage.json_storage import JSONStorageBackend
+from services.storage.sqlite_storage import SQLiteStorageBackend
 from utils.helper import anonymize_token, split_image_model
 
 
@@ -32,13 +32,13 @@ class AccountCapabilityTests(unittest.TestCase):
 
     def test_prolite_variants_are_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service = AccountService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
             self.assertEqual(service._normalize_account_type("prolite"), "ProLite")
             self.assertEqual(service._normalize_account_type("pro_lite"), "ProLite")
 
     def test_search_account_type_ignores_unrelated_scalar_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service = AccountService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
             self.assertIsNone(
                 service._search_account_type(
                     {
@@ -52,7 +52,7 @@ class AccountCapabilityTests(unittest.TestCase):
 
     def test_mark_image_result_consumes_quota(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service = AccountService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
             service.add_accounts(["token-1"])
             service.update_account(
                 "token-1",
@@ -78,7 +78,7 @@ class AccountCapabilityTests(unittest.TestCase):
 
     def test_get_available_access_token_filters_by_plan_type(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service = AccountService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
             service.add_account_items(
                 [
                     {"access_token": "token-plus", "type": "Plus", "status": "正常", "quota": 3},
@@ -101,7 +101,7 @@ class AccountCapabilityTests(unittest.TestCase):
         config.data["auto_remove_invalid_accounts"] = True
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
-                service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+                service = AccountService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
                 service.add_account_items([{"access_token": "invalid-token", "status": "正常"}])
 
                 with patch(
@@ -125,7 +125,7 @@ class AccountCapabilityTests(unittest.TestCase):
         config.data["auto_remove_invalid_accounts"] = True
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
-                service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+                service = AccountService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
                 service.add_account_items([{"access_token": "invalid-token", "status": "正常"}])
 
                 with patch(
@@ -158,7 +158,7 @@ class TokenLogTests(unittest.TestCase):
 class AuthServiceTests(unittest.TestCase):
     def test_create_authenticate_disable_and_delete_user_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            service = AuthService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
 
             item, raw_key = service.create_key(role="user", name="Alice")
 
@@ -184,7 +184,7 @@ class AuthServiceTests(unittest.TestCase):
 
     def test_authenticate_ignores_last_used_save_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            service = AuthService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
             item, raw_key = service.create_key(role="user", name="Alice")
 
             def fail_save() -> None:
@@ -200,7 +200,7 @@ class AuthServiceTests(unittest.TestCase):
 
     def test_update_user_key_replaces_raw_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            service = AuthService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
             item, raw_key = service.create_key(role="user", name="Alice")
 
             updated = service.update_key(item["id"], {"key": "sk-user-custom-key"}, role="user")
@@ -214,7 +214,7 @@ class AuthServiceTests(unittest.TestCase):
 
     def test_user_key_name_must_be_unique(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+            service = AuthService(SQLiteStorageBackend(Path(tmp_dir) / "accounts.db"))
             first, _ = service.create_key(role="user", name="Alice")
             second, _ = service.create_key(role="user", name="Bob")
 

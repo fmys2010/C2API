@@ -6,37 +6,23 @@ import { LoaderCircle } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
-import { BackupSettingsCard } from "./components/backup-settings-card";
 import { ApiDocsCard } from "./components/api-docs-card";
 import { ConfigCard } from "./components/config-card";
-import { CPAPoolDialog } from "./components/cpa-pool-dialog";
-import { CPAPoolsCard } from "./components/cpa-pools-card";
-import { ImportBrowserDialog } from "./components/import-browser-dialog";
 import { ProxyRuntimeCard } from "./components/proxy-runtime-card";
 import { SettingsHeader } from "./components/settings-header";
-import { Sub2APIConnections } from "./components/sub2api-connections";
-import { ThirdPartyAppsCard } from "./components/third-party-apps-card";
 import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
 
 const settingsTabs = [
   { value: "basic", title: "基础配置" },
-  { value: "backup", title: "备份" },
+  { value: "proxy", title: "FlareSolverr" },
   { value: "keys", title: "用户密钥" },
   { value: "api-docs", title: "接口接入" },
-  { value: "canvas", title: "画布入口" },
-  { value: "proxy", title: "FlareSolverr" },
-  { value: "cpa", title: "CPA" },
-  { value: "sub2api", title: "Sub2API" },
 ];
 
 function SettingsDataController() {
   const didLoadRef = useRef(false);
   const initialize = useSettingsStore((state) => state.initialize);
-  const loadPools = useSettingsStore((state) => state.loadPools);
-  const loadBackups = useSettingsStore((state) => state.loadBackups);
-  const pools = useSettingsStore((state) => state.pools);
-  const backupState = useSettingsStore((state) => state.backupState);
 
   useEffect(() => {
     if (didLoadRef.current) {
@@ -46,44 +32,23 @@ function SettingsDataController() {
     void initialize();
   }, [initialize]);
 
-  useEffect(() => {
-    const hasRunningJobs = pools.some((pool) => {
-      const status = pool.import_job?.status;
-      return status === "pending" || status === "running";
-    });
-    if (!hasRunningJobs) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      void loadPools(true);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [loadPools, pools]);
-
-  useEffect(() => {
-    if (!backupState?.running) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void loadBackups(true);
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [backupState?.running, loadBackups]);
-
   return null;
 }
 
 function SettingsPageContent() {
   return (
-    <>
+    <div className="space-y-3">
       <SettingsDataController />
       <SettingsHeader />
-      <Tabs defaultValue="basic" className="space-y-4">
-        <div className="sticky top-3 z-20 overflow-x-auto rounded-xl border border-white/80 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
-          <TabsList variant="line" className="min-w-max justify-start">
+      <Tabs defaultValue="basic" className="space-y-3">
+        <div className="sticky top-12 z-20 overflow-x-auto rounded-lg border border-white/[0.08] bg-[#0c0e17]/90 p-1 shadow-md backdrop-blur-md">
+          <TabsList variant="line" className="min-w-max justify-start gap-1 bg-transparent p-0">
             {settingsTabs.map((tab) => (
-              <TabsTrigger key={tab.value} value={tab.value} className="px-4">
+              <TabsTrigger
+                key={tab.value}
+                value={tab.value}
+                className="rounded px-3 py-1 font-mono text-xs text-zinc-400 transition-colors data-[state=active]:border data-[state=active]:border-white/[0.12] data-[state=active]:bg-white/[0.08] data-[state=active]:text-white"
+              >
                 {tab.title}
               </TabsTrigger>
             ))}
@@ -95,28 +60,14 @@ function SettingsPageContent() {
         <TabsContent value="proxy">
           <ProxyRuntimeCard />
         </TabsContent>
-        <TabsContent value="backup">
-          <BackupSettingsCard />
-        </TabsContent>
         <TabsContent value="keys">
           <UserKeysCard />
-        </TabsContent>
-        <TabsContent value="canvas">
-          <ThirdPartyAppsCard />
         </TabsContent>
         <TabsContent value="api-docs">
           <ApiDocsCard />
         </TabsContent>
-        <TabsContent value="cpa">
-          <CPAPoolsCard />
-        </TabsContent>
-        <TabsContent value="sub2api">
-          <Sub2APIConnections />
-        </TabsContent>
       </Tabs>
-      <CPAPoolDialog />
-      <ImportBrowserDialog />
-    </>
+    </div>
   );
 }
 
@@ -126,7 +77,7 @@ export default function SettingsPage() {
   if (isCheckingAuth || !session || session.role !== "admin") {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <LoaderCircle className="size-5 animate-spin text-stone-400" />
+        <LoaderCircle className="size-5 animate-spin text-zinc-500" />
       </div>
     );
   }

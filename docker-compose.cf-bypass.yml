@@ -1,0 +1,124 @@
+# ==============================================================================
+# ChatGPT2API - Docker Compose (Cloudflare 绕过增强版)
+# 适用场景: 国内/风控严重 IP、频繁触发 Cloudflare 5秒盾、Turnstile 人机核验环境
+# 包含组件:
+#   1. flaresolverr: 全自动无头浏览器，实时破解 Cloudflare 盾并下发 cf_clearance cookies
+#   2. warp-proxy: Cloudflare 官方 WARP 节点，提供纯净原生出口 IP
+#   3. privoxy: 高性能 HTTP 代理转发层
+#   4. app: ChatGPT2API 主程序 (纯 SQLite 存储 + 前后端一体化)
+# ==============================================================================
+
+services:
+  init-config:
+    image: python:3.12-alpine
+    container_name: chatgpt2api-init-config
+    working_dir: /app
+    volumes:
+      - ./config.json:/app/config.json
+      - ./scripts:/app/scripts:ro
+    environment:
+      CHATGPT2API_CONFIG_FILE: /app/config.json
+      CHATGPT2API_PROXY_RUNTIME_ENABLED: "true"
+      CHATGPT2API_PROXY_RUNTIME_EGRESS_MODE: "single_proxy"
+      CHATGPT2API_PROXY_RUNTIME_PROXY_URL: "http://privoxy:8118"
+      CHATGPT2API_PROXY_RUNTIME_SKIP_SSL_VERIFY: "true"
+      CHATGPT2API_PROXY_RUNTIME_RESET_STATUS_CODES: "403"
+      CHATGPT2API_PROXY_RUNTIME_CLEARANCE_ENABLED: "true"
+      CHATGPT2API_PROXY_RUNTIME_CLEARANCE_MODE: "flaresolverr"
+      CHATGPT2API_PROXY_RUNTIME_CLEARANCE_TIMEOUT_SEC: "60"
+      CHATGPT2API_PROXY_RUNTIME_CLEARANCE_REFRESH_INTERVAL: "3600"
+      CHATGPT2API_PROXY_RUNTIME_WARM_UP_ON_START: "true"
+      CHATGPT2API_PROXY_RUNTIME_BROWSER: "chrome"
+      CHATGPT2API_FLARESOLVERR_URL: "http://flaresolverr:8191"
+    command: ["python3", "/app/scripts/init_proxy_config.py"]
+    restart: "no"
+
+  warp-proxy:
+    image: caomingjun/warp:latest
+    container_name: chatgpt2api-warp-proxy
+    restart: unless-stopped
+    environment:
+      WARP_SLEEP: "2"
+      # 可选: 填入你的 WARP+ License Key 享受更高带宽
+      # WARP_LICENSE_KEY: ${WARP_LICENSE_KEY:-}
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+      net.ipv4.conf.all.src_valid_mark: 1
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.create_connection(('127.0.0.1', 1080), 5); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  privoxy:
+    image: vimagick/privoxy:latest
+    container_name: chatgpt2api-privoxy
+    restart: unless-stopped
+    depends_on:
+      warp-proxy:
+        condition: service_started
+    volumes:
+      - ./scripts/privoxy-warp.conf:/etc/privoxy/config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8118 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: chatgpt2api-flaresolverr
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Shanghai}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8191/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chatgpt2api:cf-bypass
+    container_name: chatgpt2api-cf-bypass
+    restart: unless-stopped
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+      privoxy:
+        condition: service_started
+      flaresolverr:
+        condition: service_started
+    ports:
+      - "${PORT:-8000}:80"
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json
+    environment:
+      STORAGE_BACKEND: sqlite
+      DATABASE_URL: sqlite:////app/data/accounts.db
+      CHATGPT2API_AUTH_KEY: ${CHATGPT2API_AUTH_KEY:-chatgpt2api}
+      # 关联内部代理与绕过服务
+      HTTP_PROXY: "http://privoxy:8118"
+      HTTPS_PROXY: "http://privoxy:8118"
+      NO_PROXY: "localhost,127.0.0.1,flaresolverr,privoxy,warp-proxy"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:80/api/public/config || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"

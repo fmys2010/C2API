@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { compressAllImages, deleteImageTag, deleteManagedImages, deleteToTarget, downloadImages, downloadSingleImage, fetchImageStorage, fetchImageTags, fetchManagedImages, setImageTags, type ImageStorageStats, type ManagedImage } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
+import { cn } from "@/lib/utils";
 
 const LONG_PRESS_MS = 800;
 const IMAGE_MANAGER_CHECKBOX_CLASS = "border-stone-300 bg-white/80 dark:border-white/35 dark:bg-white/5 data-[state=checked]:border-stone-950 dark:data-[state=checked]:border-white";
@@ -55,6 +56,94 @@ function useLongPress(onLongPress: () => void, ms = LONG_PRESS_MS) {
     onTouchStart: start,
     onTouchEnd: stop,
   };
+}
+
+
+/**
+ * 磁盘空间占比饼图/圆环图
+ */
+function StorageDonutChart({
+  totalMb = 0,
+  freeMb = 0,
+  imageMb = 0,
+}: {
+  totalMb: number;
+  freeMb: number;
+  imageMb: number;
+}) {
+  const safeTotal = Math.max(1, totalMb);
+  const otherUsedMb = Math.max(0, safeTotal - freeMb - imageMb);
+  const freePercent = ((freeMb / safeTotal) * 100).toFixed(1);
+
+  const radius = 48;
+  const strokeWidth = 11;
+  const circumference = 2 * Math.PI * radius; // ~301.59
+
+  // Slices: 剩余空间 (Emerald), 图片占用 (Cyan), 其它已用 (Zinc)
+  const slices = [
+    { label: "剩余可用", mb: freeMb, color: "#10b981" },
+    { label: "图片占用", mb: imageMb, color: "#06b6d4" },
+    { label: "其它占用", mb: otherUsedMb, color: "#3f3f46" },
+  ];
+
+  let accumulated = 0;
+
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div className="relative flex size-36 shrink-0 items-center justify-center">
+        <svg className="size-full -rotate-90" viewBox="0 0 120 120">
+          <circle
+            cx="60"
+            cy="60"
+            r={radius}
+            fill="none"
+            stroke="rgba(255, 255, 255, 0.05)"
+            strokeWidth={strokeWidth}
+          />
+          {slices.map((slice, index) => {
+            if (slice.mb <= 0) return null;
+            const strokeDash = (slice.mb / safeTotal) * circumference;
+            const strokeOffset = accumulated;
+            accumulated += strokeDash;
+            return (
+              <circle
+                key={index}
+                cx="60"
+                cy="60"
+                r={radius}
+                fill="none"
+                stroke={slice.color}
+                strokeWidth={strokeWidth}
+                strokeDasharray={`${strokeDash} ${circumference - strokeDash}`}
+                strokeDashoffset={-strokeOffset}
+                className="transition-all duration-500 ease-out"
+              />
+            );
+          })}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+          <span className="font-mono text-xl font-bold tracking-tight text-emerald-400">
+            {freePercent}%
+          </span>
+          <span className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">
+            可用空间
+          </span>
+        </div>
+      </div>
+
+      {/* Legend below donut */}
+      <div className="flex flex-wrap items-center justify-center gap-x-2.5 gap-y-0.5 font-mono text-[10px]">
+        <span className="flex items-center gap-1 text-zinc-400">
+          <span className="size-1.5 rounded-full bg-emerald-400" />
+          <span>剩余 {freeMb >= 1024 ? `${(freeMb / 1024).toFixed(1)} GB` : `${freeMb} MB`}</span>
+        </span>
+        <span className="flex items-center gap-1 text-zinc-400">
+          <span className="size-1.5 rounded-full bg-cyan-400" />
+          <span>图片 {imageMb >= 1024 ? `${(imageMb / 1024).toFixed(1)} GB` : `${imageMb} MB`}</span>
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function ImageManagerContent() {
@@ -273,23 +362,25 @@ function ImageManagerContent() {
   }, [startDate, endDate]);
 
   return (
-    <section className="space-y-5">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-1">
-          <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Images</div>
-          <h1 className="text-2xl font-semibold tracking-tight">图片管理</h1>
+    <section className="space-y-3 font-sans">
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2.5">
+          <h1 className="font-mono text-base font-bold tracking-tight text-white">图片管理</h1>
+          <span className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
+            {filteredItems.length} IMAGES
+          </span>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <DateRangeFilter startDate={startDate} endDate={endDate} onChange={(start, end) => { setStartDate(start); setEndDate(end); }} />
-          <Button variant="outline" onClick={clearFilters} className="h-10 rounded-xl border-stone-200 bg-white px-4 text-stone-700">
-            清除筛选条件
+          <Button variant="outline" size="sm" onClick={clearFilters} className="h-8 rounded-lg border-white/[0.08] bg-white/[0.03] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08] hover:text-white">
+            清除
           </Button>
-          <Button onClick={() => void loadImages()} disabled={isLoading} className="h-10 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800">
-            {isLoading ? <LoaderCircle className="size-4 animate-spin" /> : <Search className="size-4" />}
+          <Button size="sm" onClick={() => void loadImages()} disabled={isLoading} className="h-8 rounded-lg bg-emerald-600 px-3 font-mono text-xs text-white hover:bg-emerald-500">
+            {isLoading ? <LoaderCircle className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
             查询
           </Button>
-          <Button variant="outline" onClick={() => setDeleteMode("filtered")} disabled={isDeleting || items.length === 0 || (!startDate && !endDate)} className="h-10 rounded-xl border-rose-200 bg-white px-4 text-rose-600 hover:bg-rose-50">
-            <Trash2 className="size-4" />
+          <Button variant="outline" size="sm" onClick={() => setDeleteMode("filtered")} disabled={isDeleting || items.length === 0 || (!startDate && !endDate)} className="h-8 rounded-lg border-rose-500/25 bg-rose-950/30 px-2.5 font-mono text-xs text-rose-300 hover:bg-rose-900/50">
+            <Trash2 className="size-3.5" />
             删除匹配日期
           </Button>
         </div>
@@ -343,62 +434,143 @@ function ImageManagerContent() {
         </div>
       ) : null}
 
-      {/* Storage Stats Panel */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-4">
+      {/* 合并后的存储空间监控与操作面板：左侧饼图，右上角显示数量和占用，右下角显示操作 */}
+      <div className="rounded-xl border border-white/[0.08] bg-[#0c0e17]/80 p-4 shadow-sm backdrop-blur-md mb-3">
         {storage ? (
-          <>
-            <div className="rounded-xl border border-stone-200 bg-white/80 p-3">
-              <div className="text-xs text-stone-500">磁盘总量</div>
-              <div className="text-lg font-bold text-stone-800">{storage.disk_total_mb >= 1024 ? `${(storage.disk_total_mb / 1024).toFixed(1)} GB` : `${storage.disk_total_mb} MB`}</div>
+          <div className="flex flex-col md:flex-row items-center md:items-stretch gap-6">
+            {/* 左侧：饼图/圆环显示空间 */}
+            <div className="flex shrink-0 flex-col items-center justify-center">
+              <StorageDonutChart
+                totalMb={storage.disk_total_mb}
+                freeMb={storage.disk_free_mb}
+                imageMb={storage.image_size_mb}
+              />
             </div>
-            <div className="rounded-xl border border-stone-200 bg-white/80 p-3">
-              <div className="text-xs text-stone-500">剩余空间</div>
-              <div className={`text-lg font-bold ${storage.disk_free_mb < 200 ? "text-red-500" : storage.disk_free_mb < 500 ? "text-yellow-500" : "text-green-600"}`}>{storage.disk_free_mb >= 1024 ? `${(storage.disk_free_mb / 1024).toFixed(1)} GB` : `${storage.disk_free_mb} MB`}</div>
+
+            <div className="hidden md:block h-auto w-px bg-white/[0.08]" />
+
+            {/* 右侧部分：右上角显示数量和占用，右下角显示操作 */}
+            <div className="flex-1 flex flex-col justify-between gap-3.5 w-full">
+              {/* 右上角：显示数量和占用 */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400">
+                  <span className="flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                    <span>存储状态监控</span>
+                  </span>
+                  <span className="text-zinc-500 text-[10px]">REAL-TIME STORAGE</span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
+                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">图片数量</div>
+                    <div className="font-mono text-base sm:text-lg font-bold text-white mt-1">
+                      {storage.image_count} <span className="text-xs text-zinc-500 font-normal">张</span>
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
+                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">图片占用</div>
+                    <div className="font-mono text-base sm:text-lg font-bold text-cyan-400 mt-1">
+                      {storage.image_size_mb >= 1024 ? `${(storage.image_size_mb / 1024).toFixed(1)} GB` : `${storage.image_size_mb} MB`}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
+                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">磁盘总量</div>
+                    <div className="font-mono text-base sm:text-lg font-bold text-zinc-200 mt-1">
+                      {storage.disk_total_mb >= 1024 ? `${(storage.disk_total_mb / 1024).toFixed(1)} GB` : `${storage.disk_total_mb} MB`}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
+                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">剩余空间</div>
+                    <div className={cn("font-mono text-base sm:text-lg font-bold mt-1", storage.disk_free_mb < 200 ? "text-rose-400" : storage.disk_free_mb < 500 ? "text-amber-400" : "text-emerald-400")}>
+                      {storage.disk_free_mb >= 1024 ? `${(storage.disk_free_mb / 1024).toFixed(1)} GB` : `${storage.disk_free_mb} MB`}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 右下角：显示操作 */}
+              <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] text-zinc-400">
+                    <span className="size-1.5 rounded-full bg-emerald-400" />
+                    <span>存储快捷操作:</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 rounded border-white/[0.1] bg-white/[0.04] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08]"
+                      disabled={storageLoading}
+                      onClick={() => { void loadStorage(); }}
+                    >
+                      <RefreshCw className={cn("size-3 mr-1", storageLoading ? "animate-spin text-cyan-400" : "")} />
+                      刷新
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 rounded border-white/[0.1] bg-white/[0.04] px-2.5 font-mono text-xs text-zinc-300 hover:bg-white/[0.08]"
+                      onClick={async () => {
+                        try {
+                          const r = await compressAllImages();
+                          setCompressResult(`已压缩 ${r.saved_mb}MB`);
+                          void loadStorage();
+                        } catch {
+                          setCompressResult("压缩失败");
+                        }
+                      }}
+                    >
+                      🗜️ 压缩优化
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 rounded border-rose-500/25 bg-rose-950/30 px-2.5 font-mono text-xs text-rose-300 hover:bg-rose-900/50"
+                      onClick={() => setDeleteMode("byDate")}
+                    >
+                      🗑️ 按日期删除
+                    </Button>
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        try {
+                          const r = await deleteToTarget(targetFreeMb);
+                          toast.success(`已删除 ${r.removed} 张图片，释放 ${r.freed_mb ?? 0}MB`);
+                          void loadStorage();
+                        } catch {
+                          toast.error("清理失败");
+                        }
+                      }}
+                      className="flex items-center gap-1"
+                    >
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 rounded border-amber-500/25 bg-amber-950/30 px-2 font-mono text-xs text-amber-300 hover:bg-amber-900/50"
+                        type="submit"
+                      >
+                        🧹 清理至
+                      </Button>
+                      <Input
+                        className="h-7 w-16 rounded border-white/[0.1] bg-[#050609] px-1 text-center font-mono text-xs text-zinc-200"
+                        type="number"
+                        min={50}
+                        value={targetFreeMb}
+                        onChange={(e) => setTargetFreeMb(Number(e.target.value) || 500)}
+                      />
+                      <span className="font-mono text-[10px] text-zinc-400">MB 剩余</span>
+                    </form>
+                    {compressResult ? (
+                      <span className="ml-1 font-mono text-xs text-emerald-400">{compressResult}</span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="rounded-xl border border-stone-200 bg-white/80 p-3">
-              <div className="text-xs text-stone-500">图片数量</div>
-              <div className="text-lg font-bold text-stone-800">{storage.image_count}</div>
-            </div>
-            <div className="rounded-xl border border-stone-200 bg-white/80 p-3">
-              <div className="text-xs text-stone-500">图片占用</div>
-              <div className="text-lg font-bold text-stone-800">{storage.image_size_mb >= 1024 ? `${(storage.image_size_mb / 1024).toFixed(1)} GB` : `${storage.image_size_mb} MB`}</div>
-            </div>
-            <div className="rounded-xl border border-stone-200 bg-white/80 p-3 col-span-2 flex items-center gap-2 flex-wrap">
-              <span className="text-xs text-stone-500 w-full">快捷操作</span>
-              <Button size="sm" variant="outline" className="h-7 text-xs" disabled={storageLoading} onClick={() => { void loadStorage(); }}>
-                <RefreshCw className={`size-3 mr-1 ${storageLoading ? "animate-spin" : ""}`} />刷新
-              </Button>
-              <Button size="sm" variant="outline" className="h-7 text-xs"
-                onClick={async () => {
-                  try { const r = await compressAllImages(); setCompressResult(`已压缩${r.saved_mb}MB`); void loadStorage(); }
-                  catch { setCompressResult("压缩失败"); }
-                }}>
-                🗜️ 压缩优化
-              </Button>
-              <Button size="sm" variant="outline" className="h-7 text-xs border-rose-200 text-rose-600"
-                onClick={() => setDeleteMode("byDate")}>
-                🗑️ 按日期删除
-              </Button>
-              <form onSubmit={async (e) => { e.preventDefault();
-                try {
-                  const r = await deleteToTarget(targetFreeMb);
-                  toast.success(`已删除 ${r.removed} 张图片，释放 ${r.freed_mb ?? 0}MB`);
-                  void loadStorage();
-                } catch { toast.error("清理失败"); }
-              }} className="flex items-center gap-1">
-                <Button size="sm" variant="outline" className="h-7 text-xs border-amber-200 text-amber-700" type="submit">
-                  🧹 清理至
-                </Button>
-                <Input className="h-7 w-14 text-xs text-center px-1" type="number" min={50} value={targetFreeMb}
-                  onChange={(e) => setTargetFreeMb(Number(e.target.value) || 500)} />
-                <span className="text-xs text-stone-400">MB 剩余</span>
-              </form>
-              {compressResult ? <span className="text-xs text-green-600 ml-1">{compressResult}</span> : null}
-            </div>
-          </>
+          </div>
         ) : (
-          <div className="rounded-xl border border-stone-200 bg-white/80 p-3 col-span-full text-center text-sm text-stone-400">
-            {storageLoading ? "加载存储信息..." : "存储信息加载失败"}
+          <div className="py-6 text-center font-mono text-xs text-zinc-500">
+            {storageLoading ? "正在获取磁盘存储信息..." : "存储信息不可用"}
           </div>
         )}
       </div>

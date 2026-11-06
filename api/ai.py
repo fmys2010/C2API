@@ -11,7 +11,6 @@ from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import editable_file_task_service
 from services.log_service import LoggedCall
 from services.protocol import (
-    anthropic_v1_messages,
     openai_v1_chat_complete,
     openai_v1_image_edit,
     openai_v1_image_generations,
@@ -48,14 +47,6 @@ class ResponseCreateRequest(BaseModel):
     input: object | None = None
     tools: list[dict[str, object]] | None = None
     tool_choice: object | None = None
-    stream: bool | None = None
-
-
-class AnthropicMessageRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    model: str | None = None
-    messages: list[dict[str, object]] | None = None
-    system: object | None = None
     stream: bool | None = None
 
 
@@ -151,21 +142,6 @@ def create_router() -> APIRouter:
         )
         await filter_or_log(call, request_preview)
         return await call.run(openai_v1_response.handle, payload)
-
-    @router.post("/v1/messages")
-    async def create_message(
-            body: AnthropicMessageRequest,
-            authorization: str | None = Header(default=None),
-            x_api_key: str | None = Header(default=None, alias="x-api-key"),
-            anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
-    ):
-        identity = require_identity(authorization or (f"Bearer {x_api_key}" if x_api_key else None))
-        payload = body.model_dump(mode="python")
-        model = str(payload.get("model") or "auto")
-        request_preview = request_text(payload.get("system"), payload.get("messages"), payload.get("tools"))
-        call = LoggedCall(identity, "/v1/messages", model, "Messages", request_text=request_preview)
-        await filter_or_log(call, request_preview)
-        return await call.run(anthropic_v1_messages.handle, payload, sse="anthropic")
 
     @router.post("/v1/search")
     async def search(body: SearchRequest, authorization: str | None = Header(default=None)):

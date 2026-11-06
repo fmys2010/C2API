@@ -924,3 +924,103 @@ export async function testProxyClearance(targetUrl?: string) {
     body: { target_url: targetUrl ?? "https://chatgpt.com" },
   });
 }
+
+
+// ── 注册机 API ─────────────────────────────────────────────────────────────
+
+export type RegisterConfig = {
+  mode: "smart" | "manual";
+  target_count: number;
+  concurrency: number;
+  check_interval_seconds: number;
+  mail_mode: "cf_worker" | "duckmail" | "imap";
+  cf_worker_domains?: string;
+  cf_worker_webhook_secret?: string;
+  cf_worker_ntfy_topic?: string;
+  duckmail_api_url: string;
+  duckmail_domain: string;
+  imap_host: string;
+  imap_port: number;
+  imap_username: string;
+  imap_password: string;
+  imap_domains: string;
+  proxies_text: string;
+};
+
+export type RegisterStatusResponse = {
+  is_running: boolean;
+  mode: "smart" | "manual" | "idle";
+  active_workers: number;
+  stats: {
+    success: number;
+    failed: number;
+    is_403: number;
+    total_attempts: number;
+    start_time: number;
+  };
+  elapsed_seconds: number;
+  pool_health: {
+    active: number;
+    total: number;
+    target: number;
+  };
+  proxy_stats: {
+    total: number;
+    healthy: number;
+    degraded: number;
+    failed: number;
+    list: string[];
+  };
+  config: RegisterConfig;
+};
+
+export type RegisterLogItem = {
+  time: string;
+  text: string;
+  level: string;
+  timestamp: number;
+};
+
+export async function fetchRegisterStatus() {
+  return httpRequest<RegisterStatusResponse>("/api/register/status");
+}
+
+export async function startRegister(mode?: "smart" | "manual") {
+  return httpRequest<{ status: string; message: string }>("/api/register/start", {
+    method: "POST",
+    body: { mode },
+  });
+}
+
+export async function stopRegister() {
+  return httpRequest<{ status: string; message: string }>("/api/register/stop", {
+    method: "POST",
+  });
+}
+
+export async function updateRegisterConfig(config: Partial<RegisterConfig>) {
+  return httpRequest<RegisterConfig>("/api/register/config", {
+    method: "POST",
+    body: config,
+  });
+}
+
+export async function fetchRegisterLogs(limit = 300) {
+  return httpRequest<{ logs: RegisterLogItem[] }>(`/api/register/logs?limit=${limit}`);
+}
+
+export async function clearRegisterLogs() {
+  return httpRequest<{ status: string }>("/api/register/logs/clear", {
+    method: "POST",
+  });
+}
+
+export async function testRegisterProxy(proxy: string) {
+  return httpRequest<{ status: string; latency?: number; location?: string; message: string }>(
+    "/api/register/test_proxy",
+    {
+      method: "POST",
+      body: { proxy },
+    }
+  );
+}

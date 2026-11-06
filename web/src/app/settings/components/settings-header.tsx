@@ -2,10 +2,12 @@
 
 export function SettingsHeader() {
   return (
-    <section className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-      <div className="space-y-1">
-        <div className="text-xs font-semibold tracking-[0.18em] text-stone-500 uppercase">Settings</div>
-        <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
+    <section className="flex items-center justify-between pb-1">
+      <div className="flex items-center gap-2">
+        <h1 className="font-mono text-base font-bold tracking-tight text-white">系统配置</h1>
+        <span className="rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
+          SETTINGS
+        </span>
       </div>
     </section>
   );

@@ -102,23 +102,3 @@ def openai_error_response(
         content=openai_error_payload(detail, status_code, error_type=error_type, code=code, param=param),
         headers=headers,
     )
-
-
-def anthropic_error_response(
-    detail: object,
-    status_code: int,
-    *,
-    headers: dict[str, str] | None = None,
-) -> JSONResponse:
-    error_type = "api_error" if status_code >= 500 else _default_error_type(status_code)
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "type": "error",
-            "error": {
-                "type": error_type,
-                "message": error_message_from_detail(detail) or "request failed",
-            },
-        },
-        headers=headers,
-    )

@@ -1210,8 +1210,16 @@ class AccountService:
                     self._index = 0
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, f"删除 {removed} 个账号", {"removed": removed})
+                self._notify_pool_health_change()
             items = [dict(item) for item in self._accounts.values()]
         return {"removed": removed, "items": items}
+
+    def _notify_pool_health_change(self) -> None:
+        try:
+            from services.register import register_service
+            register_service.smart_scheduler.wake_up()
+        except Exception:
+            pass
 
     def update_account(self, access_token: str, updates: dict, quiet: bool = False) -> dict | None:
         if not access_token:

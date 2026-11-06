@@ -15,8 +15,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from services.config import DATA_DIR
-from services.protocol.error_response import anthropic_error_response, openai_error_response
-from utils.helper import anthropic_sse_stream, sse_json_stream
+from services.protocol.error_response import openai_error_response
+from utils.helper import sse_json_stream
 
 LOG_TYPE_CALL = "call"
 LOG_TYPE_ACCOUNT = "account"
@@ -71,7 +71,7 @@ class LogService:
         with self.path.open("a", encoding="utf-8") as file:
             file.write(self._serialize_item(item) + "\n")
 
-    def list(self, type: str = "", start_date: str = "", end_date: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    def list(self, type: str = "", start_date: str = "", end_date: str = "", limit: int = 300) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
         items: list[dict[str, Any]] = []
@@ -200,10 +200,8 @@ def _image_error_response(exc: Exception) -> JSONResponse:
     return openai_error_response(message, 502)
 
 
-def _protocol_error_response(exc: Exception, status_code: int, sse: str) -> JSONResponse:
+def _protocol_error_response(exc: Exception, status_code: int) -> JSONResponse:
     message = str(exc)
-    if sse == "anthropic":
-        return anthropic_error_response(message, status_code)
     return openai_error_response(message, status_code)
 
 
@@ -224,7 +222,7 @@ class LoggedCall:
     request_text: str = ""
     request_shape: dict[str, int] | None = None
 
-    async def run(self, handler, *args, sse: str = "openai"):
+    async def run(self, handler, *args):
         from services.protocol.conversation import ImageGenerationError
 
         try:
@@ -240,7 +238,7 @@ class LoggedCall:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
             if self.endpoint.startswith("/v1/images"):
                 return _image_error_response(exc)
-            return _protocol_error_response(exc, 502, sse)
+            return _protocol_error_response(exc, 502)
 
         if isinstance(result, dict):
             self.log("调用完成", result)
@@ -248,7 +246,7 @@ class LoggedCall:
             response.pop("_account_email", None)
             return response
 
-        sender = anthropic_sse_stream if sse == "anthropic" else sse_json_stream
+        sender = sse_json_stream
         try:
             has_first, first = await run_in_threadpool(_next_item, result)
         except ImageGenerationError as exc:
@@ -262,7 +260,7 @@ class LoggedCall:
             self.log("调用失败", status="failed", error=str(exc), account_email=getattr(exc, "account_email", ""))
             if self.endpoint.startswith("/v1/images"):
                 return _image_error_response(exc)
-            return _protocol_error_response(exc, 502, sse)
+            return _protocol_error_response(exc, 502)
         if not has_first:
             self.log("流式调用结束")
             return StreamingResponse(sender(()), media_type="text/event-stream")
