@@ -83,33 +83,33 @@ const statusMeta: Record<
 > = {
   正常: {
     icon: CheckCircle2,
-    badgeClass: "bg-emerald-950/70 border-emerald-500/30 text-emerald-400",
-    dotClass: "bg-emerald-400",
+    badgeClass: "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:bg-emerald-950/70 dark:text-emerald-400",
+    dotClass: "bg-emerald-500 dark:bg-emerald-400",
   },
   限流: {
     icon: CircleAlert,
-    badgeClass: "bg-amber-950/70 border-amber-500/30 text-amber-400",
-    dotClass: "bg-amber-400",
+    badgeClass: "bg-amber-500/10 border-amber-500/30 text-amber-600 dark:bg-amber-950/70 dark:text-amber-400",
+    dotClass: "bg-amber-500 dark:bg-amber-400",
   },
   异常: {
     icon: CircleOff,
-    badgeClass: "bg-rose-950/70 border-rose-500/30 text-rose-400",
-    dotClass: "bg-rose-400",
+    badgeClass: "bg-rose-500/10 border-rose-500/30 text-rose-600 dark:bg-rose-950/70 dark:text-rose-400",
+    dotClass: "bg-rose-500 dark:bg-rose-400",
   },
   禁用: {
     icon: Ban,
     badgeClass: "bg-muted border-border text-muted-foreground",
-    dotClass: "bg-zinc-500",
+    dotClass: "bg-muted-foreground",
   },
 };
 
 const metricCards = [
-  { key: "total", label: "账户总数", color: "text-foreground", dot: "bg-zinc-400", icon: UserRound },
-  { key: "active", label: "正常可用", color: "text-emerald-400", dot: "bg-emerald-400", icon: CheckCircle2 },
-  { key: "limited", label: "限流排队", color: "text-amber-400", dot: "bg-amber-400", icon: CircleAlert },
-  { key: "abnormal", label: "登录异常", color: "text-rose-400", dot: "bg-rose-400", icon: CircleOff },
-  { key: "disabled", label: "手动禁用", color: "text-subtle", dot: "bg-zinc-600", icon: Ban },
-  { key: "quota", label: "剩余额度", color: "text-cyan-400", dot: "bg-cyan-400", icon: RefreshCw },
+  { key: "total", label: "账户总数", color: "text-foreground", dot: "bg-muted-foreground", icon: UserRound },
+  { key: "active", label: "正常可用", color: "text-emerald-600 dark:text-emerald-400", dot: "bg-emerald-500 dark:bg-emerald-400", icon: CheckCircle2 },
+  { key: "limited", label: "限流排队", color: "text-amber-600 dark:text-amber-400", dot: "bg-amber-500 dark:bg-amber-400", icon: CircleAlert },
+  { key: "abnormal", label: "登录异常", color: "text-rose-600 dark:text-rose-400", dot: "bg-rose-500 dark:bg-rose-400", icon: CircleOff },
+  { key: "disabled", label: "手动禁用", color: "text-muted-foreground", dot: "bg-muted-foreground/60", icon: Ban },
+  { key: "quota", label: "剩余额度", color: "text-cyan-600 dark:text-cyan-400", dot: "bg-cyan-500 dark:bg-cyan-400", icon: RefreshCw },
 ] as const;
 
 function formatCompact(value: number) {
@@ -898,7 +898,7 @@ function AccountsPageContent() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 rounded px-2 text-[11px] text-amber-400 hover:bg-amber-950/40"
+                className="h-6 rounded px-2 text-[11px] text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 dark:hover:bg-amber-950/40"
                 onClick={() => void handleReLogin(selectedTokens)}
                 disabled={isRelogining}
               >
@@ -908,7 +908,7 @@ function AccountsPageContent() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 rounded px-2 text-[11px] text-rose-400 hover:bg-rose-950/40"
+                className="h-6 rounded px-2 text-[11px] text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 dark:hover:bg-rose-950/40"
                 onClick={() => void handleDeleteTokens(selectedTokens)}
                 disabled={isDeleting}
               >
@@ -945,7 +945,7 @@ function AccountsPageContent() {
                   <th className="w-24 px-3 py-2 text-right">操作</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/[0.04] text-xs ">
+              <tbody className="divide-y divide-border text-xs">
                 {currentRows.map((account) => {
                   const status = statusMeta[account.status];
                   const StatusIcon = status.icon;
@@ -953,7 +953,7 @@ function AccountsPageContent() {
                   return (
                     <tr
                       key={account.access_token}
-                      className="transition-colors hover:bg-foreground/[0.02]"
+                      className="transition-colors hover:bg-muted/40"
                     >
                       <td className="px-3 py-1.5">
                         <Checkbox
@@ -974,7 +974,7 @@ function AccountsPageContent() {
                           </span>
                           <button
                             type="button"
-                            className="rounded p-1 text-subtle transition hover:bg-foreground/[0.08] hover:text-foreground"
+                            className="rounded p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
                             onClick={() => {
                               void navigator.clipboard.writeText(account.access_token);
                               toast.success("Token 已复制");
@@ -986,7 +986,7 @@ function AccountsPageContent() {
                         </div>
                       </td>
                       <td className="px-3 py-1.5">
-                        <span className="rounded bg-foreground/[0.05] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                           {displayAccountType(account)}
                         </span>
                       </td>
@@ -1030,7 +1030,7 @@ function AccountsPageContent() {
                         })()}
                       </td>
                       <td className="px-3 py-1.5">
-                        <span className="font-semibold text-emerald-400">
+                        <span className="font-semibold text-emerald-600 dark:text-emerald-400">
                           {formatQuota(account)}
                         </span>
                       </td>
@@ -1040,7 +1040,7 @@ function AccountsPageContent() {
                           return (
                             <div>
                               {restore.relative ? <div className="text-foreground">{restore.relative}</div> : null}
-                              <div className="text-subtle text-[10px]">{restore.absolute}</div>
+                              <div className="text-muted-foreground text-[10px]">{restore.absolute}</div>
                             </div>
                           );
                         })()}
@@ -1050,20 +1050,20 @@ function AccountsPageContent() {
                           const inflight = account.image_inflight ?? 0;
                           return (
                             <span
-                              className={inflight > 0 ? "font-semibold text-amber-400" : "text-subtle"}
+                              className={inflight > 0 ? "font-semibold text-amber-600 dark:text-amber-400" : "text-muted-foreground"}
                             >
                               {inflight}
                             </span>
                           );
                         })()}
                       </td>
-                      <td className="px-3 py-1.5 text-emerald-400/90">{account.success}</td>
-                      <td className="px-3 py-1.5 text-rose-400/90">{account.fail}</td>
+                      <td className="px-3 py-1.5 text-emerald-600 dark:text-emerald-400/90">{account.success}</td>
+                      <td className="px-3 py-1.5 text-rose-600 dark:text-rose-400/90">{account.fail}</td>
                       <td className="px-3 py-1.5 text-right">
                         <div className="flex items-center justify-end gap-1 text-muted-foreground">
                           <button
                             type="button"
-                            className="rounded p-1 hover:bg-foreground/[0.08] hover:text-foreground"
+                            className="rounded p-1 hover:bg-muted hover:text-foreground"
                             onClick={() => openEditDialog(account)}
                             disabled={isUpdating}
                             title="编辑状态/代理"
@@ -1072,7 +1072,7 @@ function AccountsPageContent() {
                           </button>
                           <button
                             type="button"
-                            className="rounded p-1 hover:bg-foreground/[0.08] hover:text-cyan-400"
+                            className="rounded p-1 hover:bg-muted hover:text-cyan-600 dark:hover:text-cyan-400"
                             onClick={() => void handleRefreshAccounts([account.access_token])}
                             disabled={isRefreshing || refreshingTokens.has(account.access_token)}
                             title="刷新该账号"
@@ -1080,13 +1080,13 @@ function AccountsPageContent() {
                             <RefreshCw
                               className={cn(
                                 "size-3.5",
-                                (isRefreshing || refreshingTokens.has(account.access_token)) && "animate-spin text-cyan-400",
+                                (isRefreshing || refreshingTokens.has(account.access_token)) && "animate-spin text-cyan-600 dark:text-cyan-400",
                               )}
                             />
                           </button>
                           <button
                             type="button"
-                            className="rounded p-1 hover:bg-rose-950/40 hover:text-rose-400"
+                            className="rounded p-1 hover:bg-rose-500/10 dark:hover:bg-rose-950/40 hover:text-rose-600 dark:hover:text-rose-400"
                             onClick={() => void handleDeleteTokens([account.access_token])}
                             disabled={isDeleting}
                             title="删除该账号"

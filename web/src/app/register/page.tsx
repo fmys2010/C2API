@@ -64,7 +64,7 @@ function RegisterHealthDonutRing({
             cy="60"
             r={radius}
             fill="none"
-            stroke="rgba(255, 255, 255, 0.05)"
+            className="stroke-muted/60 dark:stroke-white/[0.06]"
             strokeWidth={strokeWidth}
           />
           <circle
@@ -72,11 +72,10 @@ function RegisterHealthDonutRing({
             cy="60"
             r={radius}
             fill="none"
-            stroke="#10b981"
             strokeWidth={strokeWidth}
             strokeDasharray={`${activeStroke} ${circumference - activeStroke}`}
             strokeLinecap="round"
-            className="transition-all duration-500 ease-out"
+            className="stroke-emerald-500 transition-all duration-500 ease-out"
           />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
@@ -91,15 +90,15 @@ function RegisterHealthDonutRing({
 
       <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1">
-          <span className="size-1.5 rounded-full bg-emerald-400" />
+          <span className="size-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
           <span>可用 {active}</span>
         </span>
         <span className="flex items-center gap-1">
-          <span className="size-1.5 rounded-full bg-cyan-400" />
+          <span className="size-1.5 rounded-full bg-cyan-500 dark:bg-cyan-400" />
           <span>目标 {target}</span>
         </span>
         <span className="flex items-center gap-1">
-          <span className={cn("size-1.5 rounded-full", deficit > 0 ? "bg-amber-400" : "bg-muted-foreground")} />
+          <span className={cn("size-1.5 rounded-full", deficit > 0 ? "bg-amber-500 dark:bg-amber-400" : "bg-muted-foreground")} />
           <span>缺口 {deficit}</span>
         </span>
       </div>
@@ -380,26 +379,26 @@ export default function RegisterPage() {
       {
         label: "成功入库",
         value: stats?.success ?? 0,
-        color: "text-emerald-400",
-        dot: "bg-emerald-400",
+        color: "text-emerald-600 dark:text-emerald-400",
+        dot: "bg-emerald-500 dark:bg-emerald-400",
       },
       {
         label: "注册失败",
         value: stats?.failed ?? 0,
-        color: (stats?.failed ?? 0) > 0 ? "text-rose-400" : "text-muted-foreground",
-        dot: "bg-rose-400",
+        color: (stats?.failed ?? 0) > 0 ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground",
+        dot: "bg-rose-500 dark:bg-rose-400",
       },
       {
         label: "403 拦截",
         value: stats?.is_403 ?? 0,
-        color: (stats?.is_403 ?? 0) > 0 ? "text-amber-400" : "text-muted-foreground",
-        dot: "bg-amber-400",
+        color: (stats?.is_403 ?? 0) > 0 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+        dot: "bg-amber-500 dark:bg-amber-400",
       },
       {
         label: "活跃线程",
         value: `${status?.active_workers ?? 0} / ${config.concurrency}`,
         color: "text-foreground",
-        dot: "bg-cyan-400",
+        dot: "bg-cyan-500 dark:bg-cyan-400",
       },
     ];
   }, [status, config.concurrency]);
@@ -411,12 +410,12 @@ export default function RegisterPage() {
         <div className="flex items-center gap-2.5">
           <h1 className="text-xl font-semibold tracking-tight text-foreground">账号注册机</h1>
           {status?.is_running ? (
-            <span className="flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-950/70 px-2 py-0.5 text-[11px] text-emerald-400">
-              <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-600 dark:bg-emerald-950/70 dark:text-emerald-400">
+              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
               运行中 ({status.mode === "smart" ? "智能补货" : "批量模式"})
             </span>
           ) : (
-            <span className="flex items-center gap-1.5 rounded-full border border-border bg-foreground/[0.04] px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span className="flex items-center gap-1.5 rounded-full border border-border bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
               <span className="size-1.5 rounded-full bg-muted-foreground" />
               待机中
             </span>
@@ -427,7 +426,7 @@ export default function RegisterPage() {
           <Button
             variant="outline"
             size="sm"
-            className="h-8 rounded-lg border-border bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground"
+            className="h-8 rounded-lg px-2.5 text-xs text-foreground"
             onClick={() => void loadStatus(true)}
             disabled={loading || actionLoading}
           >
@@ -437,7 +436,7 @@ export default function RegisterPage() {
           <Button
             variant="outline"
             size="sm"
-            className="h-8 rounded-lg border-border bg-foreground/[0.03] px-2.5 text-xs text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground"
+            className="h-8 rounded-lg px-2.5 text-xs text-foreground"
             onClick={handleSaveConfig}
             disabled={actionLoading}
           >
@@ -469,7 +468,7 @@ export default function RegisterPage() {
               <Button
                 variant="outline"
                 size="sm"
-                className="h-8 rounded-lg border-border bg-foreground/[0.03] px-3 text-xs text-foreground hover:bg-foreground/[0.08]"
+                className="h-8 rounded-lg px-3 text-xs text-foreground"
                 onClick={() => void handleStart("manual")}
                 disabled={actionLoading}
               >
@@ -490,13 +489,13 @@ export default function RegisterPage() {
           />
         </div>
 
-        <div className="hidden h-28 w-px bg-foreground/[0.08] md:block" />
+        <div className="hidden h-28 w-px bg-border md:block" />
 
         <div className="grid w-full flex-1 grid-cols-2 gap-2 sm:grid-cols-5">
           {metricCards.map((item) => (
             <div
               key={item.label}
-              className="flex flex-col justify-between rounded-lg border border-border bg-foreground/[0.02] p-2.5 transition hover:border-border"
+              className="flex flex-col justify-between rounded-lg border border-border bg-muted/30 p-2.5 transition hover:border-border hover:bg-muted/50"
             >
               <div className="flex items-center justify-between text-muted-foreground">
                 <span className="text-[11px]">{item.label}</span>
@@ -813,8 +812,8 @@ export default function RegisterPage() {
                   className={cn(
                     "rounded border px-2.5 py-1 text-xs",
                     testProxyResult.ok
-                      ? "border-emerald-500/30 bg-emerald-950/40 text-emerald-400"
-                      : "border-rose-500/30 bg-rose-950/40 text-rose-400"
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+                      : "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400"
                   )}
                 >
                   {testProxyResult.message}
@@ -832,7 +831,7 @@ export default function RegisterPage() {
                 <div className="flex items-center gap-2">
                   <Terminal className="size-4 text-muted-foreground" />
                   <CardTitle>运行日志</CardTitle>
-                  <span className="rounded border border-border bg-foreground/[0.04] px-1.5 py-0.2 text-[10px] text-muted-foreground">
+                  <span className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                     {logs.length} 条
                   </span>
                 </div>
@@ -853,7 +852,7 @@ export default function RegisterPage() {
                     onClick={handleCopyLogs}
                     disabled={logs.length === 0}
                   >
-                    {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+                    {copied ? <Check className="size-3 text-emerald-600 dark:text-emerald-400" /> : <Copy className="size-3" />}
                     复制
                   </Button>
                   <Button
@@ -872,7 +871,7 @@ export default function RegisterPage() {
             <CardContent className="flex flex-1 flex-col p-4 pt-0">
               <div
                 ref={terminalRef}
-                className="h-[580px] w-full overflow-y-auto rounded-lg border border-border bg-foreground/[0.02] p-3 font-mono text-xs leading-relaxed space-y-1"
+                className="h-[580px] w-full overflow-y-auto rounded-lg border border-border bg-muted/30 dark:bg-black/50 p-3 font-mono text-xs leading-relaxed space-y-1"
               >
                 {logs.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-muted-foreground text-xs">
@@ -900,18 +899,18 @@ export default function RegisterPage() {
                       text.includes("[IMAP]") ||
                       text.includes("验证码");
 
-                    let colorClass = "text-muted-foreground";
-                    if (isError) colorClass = "text-rose-400";
-                    else if (isSuccess) colorClass = "text-emerald-400";
-                    else if (isWarning) colorClass = "text-amber-400";
-                    else if (isMail) colorClass = "text-cyan-400";
+                    let colorClass = "text-foreground/90 dark:text-muted-foreground";
+                    if (isError) colorClass = "text-rose-600 dark:text-rose-400 font-medium";
+                    else if (isSuccess) colorClass = "text-emerald-600 dark:text-emerald-400 font-medium";
+                    else if (isWarning) colorClass = "text-amber-600 dark:text-amber-400 font-medium";
+                    else if (isMail) colorClass = "text-sky-600 dark:text-cyan-400 font-medium";
 
                     return (
                       <div
                         key={`${log.timestamp || 0}_${index}`}
                         className="break-all whitespace-pre-wrap"
                       >
-                        <span className="select-none text-zinc-500 mr-2">
+                        <span className="select-none text-muted-foreground/60 dark:text-zinc-500 mr-2">
                           [{log.time}]
                         </span>
                         <span className={colorClass}>{text}</span>
