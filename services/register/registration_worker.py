@@ -288,7 +288,7 @@ def register_single_account(
                 target_continue_url = str(about_resp.json().get("continue_url") or target_continue_url)
             log("✅ 个人信息提交成功")
 
-        # 8. 换取 ChatGPT Access Token
+        # 8. 换取 ChatGPT Access Token 与 Web Session Cookie
         log("核验全流程通过，正在提取 API 访问凭据 (Access Token)...")
         access_token = ""
         user_obj: dict[str, Any] = {}
@@ -302,25 +302,40 @@ def register_single_account(
             except Exception as ae:
                 logger.debug(f"[RegisterWorker] core.image2api_data: {ae}")
 
-        # 回退至 Callback 会话提取
-        if not access_token:
+        # 确保 session 跟随 continue_url 完成 Web 端会话流转与 Cookie 种植
+        if target_continue_url:
             try:
                 session.get(target_continue_url, timeout=25, allow_redirects=True, verify=False)
-                sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
-                if sess_resp.status_code == 200:
-                    sess_data = sess_resp.json()
+            except Exception as ce:
+                logger.debug(f"[RegisterWorker] continue_url navigation error: {ce}")
+
+        # 请求 /api/auth/session 提取/核验 AccessToken 与 Session Cookie
+        try:
+            sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
+            if sess_resp.status_code == 200 and sess_resp.text:
+                sess_data = sess_resp.json()
+                if not access_token:
                     access_token = str(sess_data.get("accessToken") or "").strip()
-                    user_obj = sess_data.get("user") or {}
-            except Exception as se:
-                logger.debug(f"[RegisterWorker] Web session fallback error: {se}")
+                user_obj = sess_data.get("user") or {}
+        except Exception as se:
+            logger.debug(f"[RegisterWorker] Web session fallback error: {se}")
 
         if not access_token:
             err = "未能提取到有效 accessToken"
             log(f"❌ {err}")
             return {"success": False, "email": email_addr, "error": err}
 
-        # 提取 NextAuth 会话 Cookie 用于常驻心跳续期 (方案 C)
-        session_token = session.cookies.get("__Secure-next-auth.session-token") or ""
+        # 提取 NextAuth 会话 Cookie 用于常驻心跳续期 (方案 C - 免手机号)
+        session_token = (
+            session.cookies.get("__Secure-next-auth.session-token")
+            or session.cookies.get("__Host-next-auth.session-token")
+            or ""
+        )
+        if not session_token:
+            for cookie in session.cookies.jar:
+                if "next-auth.session-token" in cookie.name:
+                    session_token = cookie.value
+                    break
 
         # 9. 存入号池数据库 (SQLite accounts.db)
         account_item = {
@@ -338,7 +353,7 @@ def register_single_account(
             "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         res = account_service.add_account_items([account_item])
-        log(f"🎉 账号注册成功并存入号池！邮箱: {email_addr} (Token: {access_token[:12]}...{access_token[-8:]}, 独立密码: 已绑定)")
+        log(f"🎉 账号注册成功并存入号池！邮箱: {email_addr} (Token: {access_token[:12]}...{access_token[-8:]}, SessionCookie: {'已捕获' if session_token else '未捕获'})")
 
         return {
             "success": True,

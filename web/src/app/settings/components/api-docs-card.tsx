@@ -6,6 +6,7 @@ import { ChevronDown, FileArchive, FileText, KeyRound, ListChecks, type LucideIc
 import { Card, CardContent } from "@/components/ui/card";
 import webConfig from "@/constants/common-env";
 import { getStoredAuthSession } from "@/store/auth";
+import { useSettingsStore } from "../store";
 
 type ParamRow = [string, string, string];
 
@@ -215,8 +216,6 @@ const docs: ApiDoc[] = [
   },
 ];
 
-const usableModels = ["gpt-image-2", "codex-gpt-image-2", "auto", "gpt-5", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-3-mini", "gpt-5-mini"];
-
 function ParamTable({ rows }: { rows: ParamRow[] }) {
   return (
     <div className="overflow-hidden rounded-lg border border-stone-200">
@@ -244,6 +243,10 @@ function ParamTable({ rows }: { rows: ParamRow[] }) {
 
 export function ApiDocsCard() {
   const [authKey, setAuthKey] = useState("");
+  const availableModels = useSettingsStore((state) => state.availableModels);
+  const modelsToShow = availableModels.length > 0
+    ? availableModels
+    : ["auto", "gpt-5-6", "gpt-5-6-mini", "gpt-6", "gpt-6-mini", "gpt-image-2.5", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"];
   const serviceBaseUrl = webConfig.apiUrl.replace(/\/$/, "") || (typeof window !== "undefined" ? window.location.origin : "");
   const openAIBaseUrl = `${serviceBaseUrl}/v1`;
   const displayKey = authKey || "<当前密钥>";
@@ -291,9 +294,9 @@ export function ApiDocsCard() {
         </div>
 
         <div className="space-y-2">
-          <div className="text-xs font-medium text-stone-600">常用模型，也可请求 /v1/models 获取</div>
+          <div className="text-xs font-medium text-stone-600">当前可用模型（实时从当前号池获取，也可请求 /v1/models）</div>
           <div className="flex flex-wrap gap-2">
-            {usableModels.map((model) => (
+            {modelsToShow.map((model) => (
               <span key={model} className="rounded-md border border-stone-200 bg-white px-2 py-1 font-mono text-xs text-stone-700">{model}</span>
             ))}
           </div>

@@ -21,7 +21,6 @@ from services.image_service import (
     list_images,
     storage_stats,
 )
-from services.image_storage_service import ImageStorageError, image_storage_service
 from services.image_tags_service import delete_tag, get_all_tags, set_tags
 from services.log_service import log_service
 from services.proxy_service import proxy_settings, test_clearance, test_proxy
@@ -182,19 +181,6 @@ def create_router(app_version: str) -> APIRouter:
         try:
             return {"result": await run_in_threadpool(backup_service.test_connection)}
         except BackupError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-
-    @router.post("/api/image-storage/test")
-    async def test_image_storage_endpoint(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        return {"result": await run_in_threadpool(image_storage_service.test_webdav)}
-
-    @router.post("/api/image-storage/sync")
-    async def sync_image_storage_endpoint(authorization: str | None = Header(default=None)):
-        require_admin(authorization)
-        try:
-            return {"result": await run_in_threadpool(image_storage_service.sync_all)}
-        except ImageStorageError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
     @router.get("/api/backups")

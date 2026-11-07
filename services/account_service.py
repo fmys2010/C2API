@@ -1484,7 +1484,6 @@ class AccountService:
                 return True
             should_defer = defer_invalid_removal and self._should_defer_invalid_token(current, now)
             next_item = dict(current)
-            next_item["invalid_count"] = int(next_item.get("invalid_count") or 0) + 1
             next_item["last_invalid_at"] = now.isoformat()
             next_item["last_refresh_error"] = str(error or "invalid access token")
             next_item["last_refresh_error_at"] = now.isoformat()

@@ -27,16 +27,6 @@ DEFAULT_BACKUP_INCLUDE = {
     "images": False,
 }
 
-DEFAULT_IMAGE_STORAGE = {
-    "enabled": False,
-    "mode": "local",
-    "webdav_url": "",
-    "webdav_username": "",
-    "webdav_password": "",
-    "webdav_root_path": "chatgpt2api/images",
-    "public_base_url": "",
-}
-
 DEFAULT_CHAT_COMPLETION_CACHE = {
     "enabled": True,
     "ttl_seconds": 60,
@@ -138,26 +128,6 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
         "last_status": str(source.get("last_status") or "idle").strip() or "idle",
         "last_error": str(source.get("last_error") or "").strip() or None,
         "last_object_key": str(source.get("last_object_key") or "").strip() or None,
-    }
-
-
-def _normalize_image_storage_settings(value: object) -> dict[str, object]:
-    source = value if isinstance(value, dict) else {}
-    mode = str(source.get("mode") or "local").strip().lower()
-    if mode not in {"local", "webdav", "both"}:
-        mode = "local"
-    enabled = _normalize_bool(source.get("enabled"), False)
-    if not enabled:
-        mode = "local"
-    root_path = str(source.get("webdav_root_path") or DEFAULT_IMAGE_STORAGE["webdav_root_path"]).strip().strip("/")
-    return {
-        "enabled": enabled,
-        "mode": mode,
-        "webdav_url": str(source.get("webdav_url") or "").strip().rstrip("/"),
-        "webdav_username": str(source.get("webdav_username") or "").strip(),
-        "webdav_password": str(source.get("webdav_password") or "").strip(),
-        "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
-        "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
     }
 
 
@@ -285,15 +255,6 @@ def _normalize_third_party_apps_settings(value: object) -> dict[str, object]:
             "url": str(canvas_source.get("url") or DEFAULT_THIRD_PARTY_APPS["infinite_canvas"]["url"]).strip(),
         },
     }
-
-
-def _validate_image_storage_settings(settings: dict[str, object]) -> None:
-    if not _normalize_bool(settings.get("enabled"), False):
-        return
-    if not str(settings.get("webdav_url") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
-    if not str(settings.get("webdav_password") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
 
 
 @dataclass(frozen=True)
@@ -514,17 +475,8 @@ class ConfigStore:
         return [word for item in words if (word := str(item or "").strip())] if isinstance(words, list) else []
 
     @property
-    def ai_review(self) -> dict[str, object]:
-        value = self.data.get("ai_review")
-        return value if isinstance(value, dict) else {}
-
-    @property
-    def global_system_prompt(self) -> str:
-        return str(self.data.get("global_system_prompt") or "").strip()
-
-    @property
     def default_upstream_model_name(self) -> str:
-        return str(self.data.get("default_upstream_model_name") or "gpt-5-5").strip()
+        return str(self.data.get("default_upstream_model_name") or "auto").strip()
 
     @property
     def default_thinking_effort(self) -> str:
@@ -591,12 +543,10 @@ class ConfigStore:
         data["auto_relogin_after_refresh"] = self.auto_relogin_after_refresh
         data["log_levels"] = self.log_levels
         data["sensitive_words"] = self.sensitive_words
-        data["ai_review"] = self.ai_review
         data["global_system_prompt"] = self.global_system_prompt
         data["default_upstream_model_name"] = self.default_upstream_model_name
         data["default_thinking_effort"] = self.default_thinking_effort
         data["backup"] = self.get_backup_settings()
-        data["image_storage"] = self.get_image_storage_settings()
         data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
         data["proxy_runtime"] = self.get_public_proxy_runtime_settings()
         data["third_party_apps"] = self.get_third_party_apps_settings()
@@ -629,9 +579,6 @@ class ConfigStore:
         next_data.update(dict(data or {}))
         if "backup" in next_data:
             next_data["backup"] = _normalize_backup_settings(next_data.get("backup"))
-        if "image_storage" in next_data:
-            next_data["image_storage"] = _normalize_image_storage_settings(next_data.get("image_storage"))
-            _validate_image_storage_settings(next_data["image_storage"])
         if "chat_completion_cache" in next_data:
             next_data["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
                 next_data.get("chat_completion_cache")
@@ -654,9 +601,6 @@ class ConfigStore:
 
     def get_backup_settings(self) -> dict[str, object]:
         return _normalize_backup_settings(self.data.get("backup"))
-
-    def get_image_storage_settings(self) -> dict[str, object]:
-        return _normalize_image_storage_settings(self.data.get("image_storage"))
 
     def get_chat_completion_cache_settings(self) -> dict[str, object]:
         return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
