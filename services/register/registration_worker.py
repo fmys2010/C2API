@@ -360,14 +360,24 @@ def register_single_account(
             "email": email_addr,
             "password": account_password,
             "device_id": did,
+            "oai-device-id": did,
+            "user-agent": ua,
             "status": "正常",
             "source_type": "web_register",
+            "quota": 25,
             "invalid_count": 0,
             "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         res = account_service.add_account_items([account_item])
         log(f"🎉 账号注册成功并存入号池！邮箱: {email_addr} (Token: {access_token[:12]}...{access_token[-8:]}, SessionCookie: {'已捕获' if session_token else '未捕获'})")
+
+        # 同步远程账号详情与额度信息
+        try:
+            account_service.fetch_remote_info(access_token, "register_sync")
+            log(f"✅ 账号信息与生图额度已同步: {email_addr}")
+        except Exception as se:
+            logger.debug(f"[RegisterWorker] Post-register sync warning: {se}")
 
         return {
             "success": True,

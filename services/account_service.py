@@ -477,7 +477,7 @@ class AccountService:
             if resp.status_code == 200:
                 data = resp.json() if resp.text else {}
                 new_token = str(data.get("accessToken") or "").strip()
-                if new_token:
+                if new_token and new_token != access_token:
                     rotated_session = s.cookies.get("__Secure-next-auth.session-token") or session_token
                     token_data = {
                         "access_token": new_token,
@@ -495,6 +495,8 @@ class AccountService:
                         },
                     )
                     return self.get_account(new_token)
+                elif new_token == access_token:
+                    logger.debug(f"Web session returned unchanged token for {account.get('email')}")
             elif resp.status_code in (401, 403):
                 logger.info(f"Web session expired for {account.get('email')} (HTTP {resp.status_code})")
         except Exception as exc:
@@ -537,7 +539,7 @@ class AccountService:
         # 1. 尝试方案 C: Web Session 续期
         if account.get("session_token"):
             res_c = self.refresh_web_session(access_token)
-            if res_c:
+            if res_c and str(res_c.get("access_token") or "").strip() != access_token:
                 logger.info(f"账号 {email} 通过方案 C (Web Session) 自愈复活成功")
                 return True
 
@@ -1425,6 +1427,8 @@ class AccountService:
                 return None
             self._accounts[access_token] = account
             self._save_accounts()
+            if updates.get("status") and current.get("status") != updates.get("status"):
+                self._notify_pool_health_change()
             if not quiet:
                 log_service.add(LOG_TYPE_ACCOUNT, "更新账号",
                                 {"token": anonymize_token(access_token), "status": account.get("status")})

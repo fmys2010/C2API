@@ -103,6 +103,7 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
                                 account_service.ping_account_heartbeat(token)
                             except Exception as pe:
                                 print(f"[account-watcher] heartbeat error: {pe}")
+                            stop_event.wait(1)
 
                 # 2. 定期全量巡检（默认 5 分钟一次，巡检限流、过期、配额与异常状态）
                 if now - last_patrol_time >= patrol_interval_seconds:

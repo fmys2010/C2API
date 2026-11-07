@@ -215,6 +215,12 @@ class OpenAIBackendAPI:
         if self.access_token:
             self.session.headers["Authorization"] = f"Bearer {self.access_token}"
 
+        session_token = str(self.account.get("session_token") or "").strip()
+        if session_token:
+            self.session.cookies.set("__Secure-next-auth.session-token", session_token, domain=".chatgpt.com")
+            if self.device_id:
+                self.session.cookies.set("oai-did", self.device_id, domain=".chatgpt.com")
+
     def close(self) -> None:
         if getattr(self, "_closed", False):
             return
@@ -252,6 +258,8 @@ class OpenAIBackendAPI:
             value = str(account.get(key) or "").strip()
             if value:
                 fp[key] = value
+        if not fp.get("oai-device-id") and account.get("device_id"):
+            fp["oai-device-id"] = str(account["device_id"]).strip()
         fp.setdefault(
             "user-agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
