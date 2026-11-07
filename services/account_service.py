@@ -1544,7 +1544,7 @@ class AccountService:
                 backend.close()
         except InvalidAccessTokenError as exc:
             refreshed_token = self.refresh_access_token(active_token, force=True, event=f"{event}:invalid_access_token")
-            if refreshed_token and refreshed_token != active_token:
+            if refreshed_token:
                 try:
                     backend = OpenAIBackendAPI(refreshed_token)
                     try:

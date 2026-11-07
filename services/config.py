@@ -475,6 +475,10 @@ class ConfigStore:
         return [word for item in words if (word := str(item or "").strip())] if isinstance(words, list) else []
 
     @property
+    def global_system_prompt(self) -> str:
+        return str(self.data.get("global_system_prompt") or "").strip()
+
+    @property
     def default_upstream_model_name(self) -> str:
         return str(self.data.get("default_upstream_model_name") or "auto").strip()
 
