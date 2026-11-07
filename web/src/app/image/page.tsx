@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, History, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { ArrowDown, LoaderCircle, PanelLeft, SquarePen } from "lucide-react";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -17,6 +17,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import {
   createImageEditTask,
   createImageGenerationTask,
@@ -1611,8 +1613,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <>
-      <section className="mx-auto grid h-[calc(100dvh-var(--shell-offset))] min-h-0 w-full max-w-[1380px] grid-cols-1 gap-2 overflow-hidden px-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:h-[calc(100dvh-5.25rem)] sm:gap-3 sm:px-3 sm:pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <div className="hidden h-full min-h-0 border-r border-stone-200/70 pr-3 lg:block">
+      <section className="flex h-[calc(100dvh-var(--mobile-bar))] min-h-0 w-full overflow-hidden lg:h-dvh">
+        <div className="hidden h-full w-60 shrink-0 border-r border-border bg-sidebar p-2 lg:block">
           <ImageSidebar
             conversations={conversations}
             isLoadingHistory={isLoadingHistory}
@@ -1626,15 +1628,12 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           />
         </div>
 
-        <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
-          <DialogContent className="flex h-[min(82dvh,760px)] w-[92vw] max-w-[460px] flex-col overflow-hidden rounded-[32px] border-white/80 bg-white p-0 shadow-[0_32px_110px_-38px_rgba(15,23,42,0.45)] sm:rounded-[36px]">
-            <DialogHeader className="px-6 pt-7 pb-4 sm:px-8">
-              <DialogTitle className="flex items-center gap-2 text-xl font-bold tracking-tight">
-                <History className="size-5" />
-                历史记录
-              </DialogTitle>
-            </DialogHeader>
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-8 sm:px-8">
+        <Sheet open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+          <SheetContent side="left" className="flex w-72 flex-col gap-2 border-r border-border bg-sidebar p-2 pt-3">
+            <SheetHeader className="p-0 px-2.5">
+              <SheetTitle className="text-sm font-semibold text-foreground">历史记录</SheetTitle>
+            </SheetHeader>
+            <div className="min-h-0 flex-1">
               <ImageSidebar
                 conversations={conversations}
                 isLoadingHistory={isLoadingHistory}
@@ -1643,7 +1642,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
                   handleCreateDraft();
                   setIsHistoryOpen(false);
                 }}
-                onClearHistory={openClearHistoryConfirm}
+                onClearHistory={() => {
+                  setIsHistoryOpen(false);
+                  openClearHistoryConfirm();
+                }}
                 onSelectConversation={(id) => {
                   setSelectedConversationId(id);
                   setIsHistoryOpen(false);
@@ -1651,102 +1653,102 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
                 onDeleteConversation={openDeleteConversationConfirm}
                 onRenameConversation={handleRenameConversation}
                 formatConversationTime={formatConversationTime}
-                hideActionButtons
               />
             </div>
-          </DialogContent>
-        </Dialog>
+          </SheetContent>
+        </Sheet>
 
-        <div className="flex min-h-0 flex-col gap-2 sm:gap-4">
-          <div className="flex items-center justify-between gap-2 px-1 lg:hidden">
-            <Button
-              variant="outline"
-              className="h-10 flex-1 rounded-2xl border-stone-200 bg-white/90 text-stone-700 shadow-sm"
-              onClick={() => setIsHistoryOpen(true)}
-            >
-              <History className="mr-2 size-4" />
-              历史记录 ({conversations.length})
-            </Button>
-            <Button
-              className="h-10 rounded-2xl bg-stone-950 text-white shadow-sm"
-              onClick={handleCreateDraft}
-            >
-              <Plus className="size-4" />
-              新建
-            </Button>
-            <Button
-              variant="outline"
-              className="h-10 rounded-2xl border-stone-200 bg-white/85 px-3 text-stone-600 shadow-sm"
-              onClick={openClearHistoryConfirm}
-              disabled={conversations.length === 0}
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
-
-          <div className="relative min-h-0 flex-1">
-            <div
-              ref={resultsViewportRef}
-              onScroll={handleResultsScroll}
-              className="hide-scrollbar h-full overscroll-contain overflow-y-auto px-1 py-2 sm:px-4 sm:py-4"
-              style={{ contain: "layout style paint" }}
-            >
-              <ImageResults
-                selectedConversation={selectedConversation}
-                onOpenLightbox={openLightbox}
-                onContinueEdit={handleContinueEdit}
-                onDeletePrompt={openDeletePromptConfirm}
-                onDeleteResults={openDeleteResultsConfirm}
-                onReuseTurnConfig={handleReuseTurnConfig}
-                onRegenerateTurn={handleRegenerateTurn}
-                onRetryImage={handleRetryImage}
-                onTimeoutRetryContinue={handleTimeoutRetryContinue}
-                onDismissErrors={handleDismissErrors}
-                formatConversationTime={formatConversationTime}
-              />
-            </div>
-
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="flex h-11 shrink-0 items-center gap-1 border-b border-border px-1.5 lg:hidden">
             <button
-              ref={scrollToLatestBtnRef}
               type="button"
-              aria-label="滚动到最新消息"
-              title="滚动到最新消息"
-              onClick={() => scrollResultsToLatest("smooth")}
-              className="absolute bottom-4 left-1/2 z-20 inline-flex size-11 -translate-x-1/2 items-center justify-center rounded-full border border-stone-200 bg-white/95 text-stone-700 shadow-lg shadow-stone-200/60 backdrop-blur transition hover:-translate-y-0.5 hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-stone-400 dark:border-white/10 dark:bg-stone-800/95 dark:text-stone-100 dark:shadow-black/40 dark:hover:bg-stone-700"
-              style={{ display: "none" }}
+              onClick={() => setIsHistoryOpen(true)}
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-foreground/[0.05]"
+              aria-label={`打开历史记录，共 ${conversations.length} 个对话`}
+              title="历史记录"
             >
-              <ArrowDown className="size-5" />
+              <PanelLeft className="size-4.5" />
+            </button>
+            <span className="min-w-0 flex-1 truncate text-center text-[13px] font-medium text-foreground">
+              {selectedConversation?.title || "新对话"}
+            </span>
+            <button
+              type="button"
+              onClick={handleCreateDraft}
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-foreground/[0.05]"
+              aria-label="新建对话"
+              title="新建对话"
+            >
+              <SquarePen className="size-4.5" />
             </button>
           </div>
 
-          <ImageComposer
-            prompt={imagePrompt}
-            imageCount={imageCount}
-            imageRatio={imageRatio}
-            imageTier={imageTier}
-            imageWidth={imageWidth}
-            imageHeight={imageHeight}
-            imageQuality={imageQuality}
-            imageModel={imageModel}
-            imageModels={imageModels}
-            availableQuota={availableQuota}
-            activeTaskCount={activeTaskCount}
-            referenceImages={referenceImages}
-            textareaRef={textareaRef}
-            fileInputRef={fileInputRef}
-            onPromptChange={setImagePrompt}
-            onImageCountChange={(value) => setImageCount(value ? clampImageCount(value) : "")}
-            onImageRatioChange={setImageRatio}
-            onImageTierChange={setImageTier}
-            onImageWidthChange={setImageWidth}
-            onImageHeightChange={setImageHeight}
-            onImageQualityChange={setImageQuality}
-            onImageModelChange={setImageModel}
-            onSubmit={handleSubmit}
-            onPickReferenceImage={() => fileInputRef.current?.click()}
-            onReferenceImageChange={handleReferenceImageChange}
-            onRemoveReferenceImage={handleRemoveReferenceImage}
-          />
+          {/* An empty conversation centres the greeting and composer, as a new chat does. */}
+          <div className={cn("flex min-h-0 flex-1 flex-col", !selectedConversation && "justify-center")}>
+            <div className={cn("relative min-h-0", selectedConversation && "flex-1")}>
+              <div
+                ref={resultsViewportRef}
+                onScroll={handleResultsScroll}
+                className="hide-scrollbar h-full overscroll-contain overflow-y-auto px-4 py-6"
+                style={{ contain: "layout style paint" }}
+              >
+                <ImageResults
+                  selectedConversation={selectedConversation}
+                  onOpenLightbox={openLightbox}
+                  onContinueEdit={handleContinueEdit}
+                  onDeletePrompt={openDeletePromptConfirm}
+                  onDeleteResults={openDeleteResultsConfirm}
+                  onReuseTurnConfig={handleReuseTurnConfig}
+                  onRegenerateTurn={handleRegenerateTurn}
+                  onRetryImage={handleRetryImage}
+                  onTimeoutRetryContinue={handleTimeoutRetryContinue}
+                  onDismissErrors={handleDismissErrors}
+                  formatConversationTime={formatConversationTime}
+                />
+              </div>
+
+              <button
+                ref={scrollToLatestBtnRef}
+                type="button"
+                aria-label="滚动到最新消息"
+                title="滚动到最新消息"
+                onClick={() => scrollResultsToLatest("smooth")}
+                className="absolute bottom-3 left-1/2 z-20 inline-flex size-8 -translate-x-1/2 items-center justify-center rounded-full border border-border bg-card text-foreground shadow-md transition hover:bg-muted"
+                style={{ display: "none" }}
+              >
+                <ArrowDown className="size-4" />
+              </button>
+            </div>
+
+            <ImageComposer
+              prompt={imagePrompt}
+              imageCount={imageCount}
+              imageRatio={imageRatio}
+              imageTier={imageTier}
+              imageWidth={imageWidth}
+              imageHeight={imageHeight}
+              imageQuality={imageQuality}
+              imageModel={imageModel}
+              imageModels={imageModels}
+              availableQuota={availableQuota}
+              activeTaskCount={activeTaskCount}
+              referenceImages={referenceImages}
+              textareaRef={textareaRef}
+              fileInputRef={fileInputRef}
+              onPromptChange={setImagePrompt}
+              onImageCountChange={(value) => setImageCount(value ? clampImageCount(value) : "")}
+              onImageRatioChange={setImageRatio}
+              onImageTierChange={setImageTier}
+              onImageWidthChange={setImageWidth}
+              onImageHeightChange={setImageHeight}
+              onImageQualityChange={setImageQuality}
+              onImageModelChange={setImageModel}
+              onSubmit={handleSubmit}
+              onPickReferenceImage={() => fileInputRef.current?.click()}
+              onReferenceImageChange={handleReferenceImageChange}
+              onRemoveReferenceImage={handleRemoveReferenceImage}
+            />
+          </div>
         </div>
       </section>
 
@@ -1790,7 +1792,7 @@ export default function ImagePage() {
   if (isCheckingAuth || !session) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <LoaderCircle className="size-5 animate-spin text-stone-400" />
+        <LoaderCircle className="size-5 animate-spin text-subtle" />
       </div>
     );
   }

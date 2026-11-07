@@ -234,6 +234,8 @@ function ThemedToaster() {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = normalizePath(usePathname());
   const isLogin = pathname === "/login";
+  // The image page is a full-height chat layout that manages its own spacing.
+  const isFullBleed = pathname === "/image";
 
   return (
     <>
@@ -241,8 +243,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-h-dvh flex-col lg:flex-row">
         <AppNavigation pathname={pathname} />
         {/* The registration page has a fixed dark palette, so it keeps dark tokens in both themes. */}
-        <main className={cn("min-w-0 flex-1", !isLogin && "px-3 py-4 sm:px-5 lg:px-8 lg:py-6", pathname === "/register" && "dark")}>
-          <div className="mx-auto max-w-[1600px] space-y-4">{children}</div>
+        <main className={cn("min-w-0 flex-1", !isLogin && !isFullBleed && "px-3 py-4 sm:px-5 lg:px-8 lg:py-6", pathname === "/register" && "dark")}>
+          <div className={cn(!isFullBleed && "mx-auto max-w-[1600px] space-y-4")}>{children}</div>
         </main>
       </div>
     </>
