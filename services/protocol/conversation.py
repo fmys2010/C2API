@@ -313,6 +313,9 @@ class ConversationRequest:
 class ConversationState:
     text: str = ""
     raw_text: str = ""
+    reasoning_text: str = ""
+    raw_reasoning_text: str = ""
+    current_channel: str = ""
     conversation_id: str = ""
     file_ids: list[str] = field(default_factory=list)
     sediment_ids: list[str] = field(default_factory=list)
@@ -405,6 +408,38 @@ def is_visible_assistant_message(message: dict[str, Any]) -> bool:
         return False
 
     return True
+
+
+def is_thought_assistant_message(message: dict[str, Any]) -> bool:
+    author = message.get("author")
+    if not isinstance(author, dict):
+        return False
+    role = str(author.get("role") or "").strip().lower()
+    if role != "assistant":
+        return False
+    channel = str(message.get("channel") or "").strip().lower()
+    if channel == "thought":
+        return True
+    content = message.get("content") or {}
+    if isinstance(content, dict):
+        if str(content.get("content_type") or "").strip().lower() == "thoughts":
+            return True
+    return False
+
+
+def thought_message_text(message: dict[str, Any]) -> str:
+    content = message.get("content") or {}
+    if not isinstance(content, dict):
+        return ""
+    parts = content.get("parts") or []
+    if isinstance(parts, list) and parts:
+        text = "".join(part for part in parts if isinstance(part, str))
+        if text:
+            return text
+    text_field = str(content.get("text") or "")
+    if text_field:
+        return text_field
+    return ""
 
 
 def strip_history(text: str, history_text: str = "") -> str:
@@ -632,6 +667,7 @@ def conversation_base_event(event_type: str, state: ConversationState, **extra: 
     return {
         "type": event_type,
         "text": state.text,
+        "reasoning_text": state.reasoning_text,
         "conversation_id": state.conversation_id,
         "file_ids": list(state.file_ids),
         "sediment_ids": list(state.sediment_ids),
@@ -664,11 +700,60 @@ def iter_conversation_payloads(payloads: Iterator[str], history_text: str = "",
             yield conversation_base_event("conversation.event", state, raw=event)
             continue
         update_conversation_state(state, payload, event)
+
+        # Update current channel if present in message or patch
+        for candidate in (event, event.get("v")):
+            if isinstance(candidate, dict):
+                msg = candidate.get("message")
+                if isinstance(msg, dict):
+                    ch = str(msg.get("channel") or "").strip().lower()
+                    if ch:
+                        state.current_channel = ch
+        if event.get("p") == "/message/channel":
+            state.current_channel = str(event.get("v") or "").strip().lower()
+        elif event.get("o") == "patch" and isinstance(event.get("v"), list):
+            for item in event.get("v"):
+                if isinstance(item, dict) and item.get("p") == "/message/channel":
+                    state.current_channel = str(item.get("v") or "").strip().lower()
+
+        # Handle history skip for text messages
         if history_index < len(history_messages) and event_assistant_text(event, history_text) == history_messages[history_index]:
             history_index += 1
             state.raw_text = ""
             state.text = ""
             continue
+
+        # Extract reasoning message from candidate
+        thought_msg = None
+        for candidate in (event, event.get("v")):
+            if isinstance(candidate, dict):
+                msg = candidate.get("message")
+                if isinstance(msg, dict) and is_thought_assistant_message(msg):
+                    thought_msg = msg
+                    break
+
+        if thought_msg is not None:
+            thought_text = thought_message_text(thought_msg)
+            if thought_text and thought_text != state.reasoning_text:
+                delta = thought_text[len(state.reasoning_text):] if thought_text.startswith(state.reasoning_text) else thought_text
+                state.raw_reasoning_text = thought_text
+                state.reasoning_text = thought_text
+                if delta:
+                    yield conversation_base_event("conversation.reasoning_delta", state, raw=event, delta=delta)
+                    continue
+
+        # If current channel is thought, patches apply to reasoning
+        if state.current_channel == "thought":
+            next_raw_reasoning = apply_text_patch(event, state.raw_reasoning_text, "")
+            if next_raw_reasoning != state.raw_reasoning_text:
+                delta = next_raw_reasoning[len(state.reasoning_text):] if next_raw_reasoning.startswith(state.reasoning_text) else next_raw_reasoning
+                state.raw_reasoning_text = next_raw_reasoning
+                state.reasoning_text = next_raw_reasoning
+                if delta:
+                    yield conversation_base_event("conversation.reasoning_delta", state, raw=event, delta=delta)
+                    continue
+
+        # Otherwise, process standard assistant text
         next_raw_text = assistant_raw_text(event, state.raw_text, history_text)
         next_text = sanitize_output_text(next_raw_text)
         state.raw_text = next_raw_text
@@ -710,7 +795,7 @@ def text_backend(model: str = "auto") -> OpenAIBackendAPI:
     return OpenAIBackendAPI(access_token=account_service.get_text_access_token(model=model))
 
 
-def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
+def stream_text_events(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[dict[str, Any]]:
     attempted_tokens: set[str] = set()
     token = getattr(backend, "access_token", "")
     emitted = False
@@ -729,12 +814,12 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                 prompt=request.prompt,
                 thinking_effort=request.thinking_effort,
             ):
-                if event.get("type") != "conversation.delta":
-                    continue
-                delta = str(event.get("delta") or "")
-                if delta:
-                    emitted = True
-                    yield delta
+                event_type = event.get("type")
+                if event_type in {"conversation.delta", "conversation.reasoning_delta"}:
+                    delta = str(event.get("delta") or "")
+                    if delta:
+                        emitted = True
+                        yield event
             account_service.mark_text_used(token)
             return
         except Exception as exc:
@@ -757,8 +842,28 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                 active_backend.close()
 
 
+def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
+    for event in stream_text_events(backend, request):
+        if event.get("type") == "conversation.delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                yield delta
+
+
+def collect_text_and_reasoning(backend: OpenAIBackendAPI, request: ConversationRequest) -> tuple[str, str]:
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    for event in stream_text_events(backend, request):
+        if event.get("type") == "conversation.delta":
+            content_parts.append(str(event.get("delta") or ""))
+        elif event.get("type") == "conversation.reasoning_delta":
+            reasoning_parts.append(str(event.get("delta") or ""))
+    return "".join(content_parts), "".join(reasoning_parts)
+
+
 def collect_text(backend: OpenAIBackendAPI, request: ConversationRequest) -> str:
-    return "".join(stream_text_deltas(backend, request))
+    content, _ = collect_text_and_reasoning(backend, request)
+    return content
 
 
 def _get_detailed_error_from_tasks(

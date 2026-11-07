@@ -7,11 +7,13 @@ from typing import Any, Iterable, Iterator
 from fastapi import HTTPException
 
 from services.protocol.chat_completion_cache import cache_key, chat_completion_cache, normalize_text_messages
+import services.protocol.conversation as conversation_module
 from services.protocol.conversation import (
     ConversationRequest,
     ImageOutput,
     collect_image_outputs,
     collect_text,
+    collect_text_and_reasoning,
     count_message_image_tokens,
     count_message_text_tokens,
     count_text_tokens,
@@ -19,6 +21,7 @@ from services.protocol.conversation import (
     normalize_messages,
     stream_image_outputs_with_pool,
     stream_text_deltas,
+    stream_text_events,
     text_backend,
 )
 from services.protocol.web_search_tool import (
@@ -82,12 +85,17 @@ def completion_response(
     created: int | None = None,
     messages: list[dict[str, Any]] | None = None,
     annotations: list[dict[str, Any]] | None = None,
+    reasoning_content: str = "",
 ) -> dict[str, Any]:
     prompt_text_tokens = count_message_text_tokens(messages, model) if messages else 0
     prompt_image_tokens = count_message_image_tokens(messages, model) if messages else 0
     prompt_tokens = prompt_text_tokens + prompt_image_tokens
-    completion_tokens = count_text_tokens(content, model) if messages else 0
-    message = {"role": "assistant", "content": content}
+    completion_text_tokens = count_text_tokens(content, model) if messages else 0
+    reasoning_tokens = count_text_tokens(reasoning_content, model) if (messages and reasoning_content) else 0
+    completion_tokens = completion_text_tokens + reasoning_tokens
+    message: dict[str, Any] = {"role": "assistant", "content": content}
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
     if annotations:
         message["annotations"] = annotations
     return {
@@ -110,9 +118,9 @@ def completion_response(
                 "cached_tokens": 0,
             },
             "completion_tokens_details": {
-                "text_tokens": completion_tokens,
+                "text_tokens": completion_text_tokens,
                 "image_tokens": 0,
-                "reasoning_tokens": 0,
+                "reasoning_tokens": reasoning_tokens,
             },
         },
     }
@@ -128,12 +136,38 @@ def stream_text_chat_completion(
     created = int(time.time())
     sent_role = False
     request = ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort)
-    for delta_text in stream_text_deltas(backend, request):
+    if stream_text_deltas is not conversation_module.stream_text_deltas:
+        for delta_text in stream_text_deltas(backend, request):
+            if not sent_role:
+                sent_role = True
+                yield completion_chunk(model, {"role": "assistant", "content": delta_text}, None, completion_id, created)
+            else:
+                yield completion_chunk(model, {"content": delta_text}, None, completion_id, created)
         if not sent_role:
-            sent_role = True
-            yield completion_chunk(model, {"role": "assistant", "content": delta_text}, None, completion_id, created)
-        else:
-            yield completion_chunk(model, {"content": delta_text}, None, completion_id, created)
+            yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
+        yield completion_chunk(model, {}, "stop", completion_id, created)
+        return
+
+    for event in stream_text_events(backend, request):
+        event_type = event.get("type")
+        if event_type == "conversation.reasoning_delta":
+            delta_reasoning = str(event.get("delta") or "")
+            if not delta_reasoning:
+                continue
+            if not sent_role:
+                sent_role = True
+                yield completion_chunk(model, {"role": "assistant", "reasoning_content": delta_reasoning}, None, completion_id, created)
+            else:
+                yield completion_chunk(model, {"reasoning_content": delta_reasoning}, None, completion_id, created)
+        elif event_type == "conversation.delta":
+            delta_text = str(event.get("delta") or "")
+            if not delta_text:
+                continue
+            if not sent_role:
+                sent_role = True
+                yield completion_chunk(model, {"role": "assistant", "content": delta_text}, None, completion_id, created)
+            else:
+                yield completion_chunk(model, {"content": delta_text}, None, completion_id, created)
     if not sent_role:
         yield completion_chunk(model, {"role": "assistant", "content": ""}, None, completion_id, created)
     yield completion_chunk(model, {}, "stop", completion_id, created)
@@ -306,11 +340,27 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         return web_search_chat_response(messages, model)
     thinking_effort = thinking_effort_from_body(body)
     key = cache_key(body, messages, stream=False)
+
+    def _compute_response():
+        if collect_text is not conversation_module.collect_text:
+            text = collect_text(text_backend(model), ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort))
+            return completion_response(
+                model,
+                text,
+                messages=messages,
+            )
+        content, reasoning = collect_text_and_reasoning(
+            text_backend(model),
+            ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort),
+        )
+        return completion_response(
+            model,
+            content,
+            messages=messages,
+            reasoning_content=reasoning,
+        )
+
     return chat_completion_cache.get_or_compute_response(
         key,
-        lambda: completion_response(
-            model,
-            collect_text(text_backend(model), ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort)),
-            messages=messages,
-        ),
+        _compute_response,
     )

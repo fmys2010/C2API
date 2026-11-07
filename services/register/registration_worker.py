@@ -182,7 +182,7 @@ def register_single_account(
             log(f"❌ {err}")
             return {"success": False, "email": email_addr, "error": err, "is_403": True}
 
-        # 4. 生成 OAuth PKCE 挑战参数
+        # 4. 生成并访问 OAuth PKCE 挑战端点，建立官方认证会话
         state = secrets.token_urlsafe(16)
         code_verifier = secrets.token_urlsafe(64)
         code_challenge = _sha256_b64url_no_pad(code_verifier)
@@ -194,13 +194,17 @@ def register_single_account(
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
-            "id_token_add_organizations": "true",
-            "codex_cli_simplified_flow": "true",
+            "screen_hint": "signup",
+            "prompt": "create",
         }
         oauth_auth_url = f"https://auth.openai.com/oauth/authorize?{urllib.parse.urlencode(oauth_params)}"
+        session.get(oauth_auth_url, proxies=proxies, timeout=20, allow_redirects=True, verify=False)
+        cookie_did = session.cookies.get("oai-did")
+        if cookie_did:
+            did = str(cookie_did)
 
-        # 5. 计算 Sentinel 算力挑战并提交账号
-        log(f"正在计算 Sentinel 算力挑战...")
+        # 5. 计算 Sentinel 算力挑战并提交账号进入注册流
+        log(f"正在计算 Sentinel 算力挑战 (flow: authorize_continue)...")
         sentinel_payload = generate_sentinel_payload(
             did=did, flow="authorize_continue", proxy=proxy, user_agent=ua, ctx=reg_ctx
         )
@@ -208,12 +212,13 @@ def register_single_account(
             "Referer": "https://auth.openai.com/create-account",
             "Content-Type": "application/json",
             "openai-sentinel-token": sentinel_payload,
+            "OpenAI-Sentinel-Token": sentinel_payload,
         })
 
         signup_resp = session.post(
             "https://auth.openai.com/api/accounts/authorize/continue",
             headers=headers,
-            json={"username": {"value": email_addr, "kind": "email"}, "screen_hint": "login_or_signup"},
+            json={"username": {"value": email_addr, "kind": "email"}, "screen_hint": "signup"},
             proxies=proxies,
             timeout=25,
             verify=False,
@@ -237,54 +242,52 @@ def register_single_account(
         signup_data = signup_resp.json() if signup_resp.text else {}
         cont_url = str(signup_data.get("continue_url") or "")
         page_type = str((signup_data.get("page") or {}).get("type") or "")
+        log(f"账号提交成功，会话流转至: {page_type or cont_url}")
 
-        # 6. 设密（仅当 OpenAI 要求密码阶段时才设密，若是 passwordless 无密码通道则直接进入接码）
-        if "/password" in cont_url and "email-verification" not in cont_url:
-            log(f"正在设置账号密码...")
-            sentinel_pwd = generate_sentinel_payload(
-                did=did, flow="username_password_create", proxy=proxy, user_agent=ua, ctx=reg_ctx
-            )
-            pwd_headers = _oai_headers(did, ua, {
-                "Referer": "https://auth.openai.com/create-account/password",
-                "Content-Type": "application/json",
-                "openai-sentinel-token": sentinel_pwd,
-            })
+        # 6. 触发向邮箱发送 6 位验证码 (优先走现代化 passwordless 无密码直通验证流)
+        sentinel_otp_send = generate_sentinel_payload(
+            did=did, flow="passwordless_signup", proxy=proxy, user_agent=ua, ctx=reg_ctx
+        )
+        send_headers = _oai_headers(did, ua, {
+            "Referer": cont_url or "https://auth.openai.com/create-account/password",
+            "Content-Type": "application/json",
+            "openai-sentinel-token": sentinel_otp_send,
+            "OpenAI-Sentinel-Token": sentinel_otp_send,
+        })
 
-            pwd_resp = session.post(
-                "https://auth.openai.com/api/accounts/user/register",
-                headers=pwd_headers,
-                json={"password": password, "username": email_addr},
-                proxies=proxies,
-                timeout=25,
-                verify=False,
-            )
+        log(f"触发向邮箱派发 6 位验证码...")
+        send_resp = session.post(
+            "https://auth.openai.com/api/accounts/passwordless/send-otp",
+            headers=send_headers,
+            json={},
+            proxies=proxies,
+            timeout=20,
+            verify=False,
+        )
 
-            if pwd_resp.status_code != 200:
-                err = f"设密被拦截 HTTP {pwd_resp.status_code}: {pwd_resp.text[:100]}"
-                log(f"❌ {err}")
-                return {"success": False, "email": email_addr, "error": err}
-
-        # 7. 触发邮件验证码发信（若是 passwordless_signup 无密码通道，OpenAI 在第一步已自动发信，切勿重复调用 send 避免触发 409 invalid_state）
-        page_payload = (signup_data.get("page") or {}).get("payload") or {}
-        is_passwordless = page_payload.get("email_verification_mode") == "passwordless_signup"
-        if not is_passwordless:
-            log(f"触发向邮箱发送 6 位验证码...")
-            sentinel_send = generate_sentinel_payload(
-                did=did, flow="authorize_continue", proxy=proxy, user_agent=ua, ctx=reg_ctx
-            )
-            send_headers = _oai_headers(did, ua, {
-                "Referer": cont_url or "https://auth.openai.com/create-account",
-                "Content-Type": "application/json",
-                "openai-sentinel-token": sentinel_send,
-            })
-            session.post(
-                "https://auth.openai.com/api/accounts/email-otp/send",
+        if send_resp.status_code == 200:
+            log(f"✅ 验证码邮件已成功派发 (passwordless)")
+        else:
+            log(f"⚠️ passwordless/send-otp 返回 HTTP {send_resp.status_code}，尝试备用重发端点...")
+            resend_resp = session.post(
+                "https://auth.openai.com/api/accounts/email-otp/resend",
                 headers=send_headers,
                 json={},
                 proxies=proxies,
                 timeout=20,
                 verify=False,
             )
+            if resend_resp.status_code == 200:
+                log(f"✅ 备用重发成功 (email-otp/resend)")
+            else:
+                session.post(
+                    "https://auth.openai.com/api/accounts/email-otp/send",
+                    headers=send_headers,
+                    json={},
+                    proxies=proxies,
+                    timeout=20,
+                    verify=False,
+                )
 
         # 8. 轮询提取邮件验证码
         log(f"正在等待邮件到达并提取验证码...")
@@ -357,22 +360,28 @@ def register_single_account(
                 target_continue_url = str(about_resp.json().get("continue_url") or target_continue_url)
                 log(f"更新 target_continue_url: {target_continue_url}")
 
-        # 11. 提取 API 凭据
+        # 11. 提取 API 凭据 (优先从回调 URL 提取 OAuth 授权码换取 Token)
         log(f"注册核验通过，提取 API 访问凭据...")
         access_token = ""
         refresh_token = ""
         id_token = ""
 
-        # 策略 1: 基于 ChatGPT 注册流直接提取 Web Session Token
-        if target_continue_url:
-            sess_token = extract_session_token(session, target_continue_url, proxy=proxy)
-            if sess_token:
-                log(f"成功提取会话 Access Token (长度: {len(sess_token)})")
-                access_token = sess_token
+        # 策略 1: 检查 target_continue_url 是否已直接携带授权码回调
+        cb_res = _parse_callback_url(target_continue_url)
+        code = cb_res.get("code")
 
-        # 策略 2: 若策略 1 未获取，尝试走 OAuth PKCE 回调换取
-        if not access_token:
-            log(f"尝试通过 OAuth 授权流换取 Token...")
+        # 策略 2: 若未直接携带，若为绝对 URL 则追踪重定向提取
+        if not code and target_continue_url.startswith("http"):
+            try:
+                red_resp = session.get(target_continue_url, proxies=proxies, timeout=20, allow_redirects=True, verify=False)
+                cb_res = _parse_callback_url(red_resp.url or "")
+                code = cb_res.get("code")
+            except Exception as e:
+                logger.debug(f"跟踪 target_continue_url 失败: {e}")
+
+        # 策略 3: 若仍未拿到 code，重入 OAuth 授权流换取
+        if not code:
+            log(f"尝试通过 OAuth 授权流换取授权码...")
             try:
                 auth_resp = session.get(oauth_auth_url, proxies=proxies, timeout=25, allow_redirects=True, verify=False)
                 current_url = auth_resp.url or ""
@@ -394,31 +403,46 @@ def register_single_account(
                             cb_res = _parse_callback_url(final_r.url or "")
 
                 code = cb_res.get("code")
-                if code:
-                    token_resp = requests.post(
-                        "https://auth.openai.com/oauth/token",
-                        data={
-                            "grant_type": "authorization_code",
-                            "client_id": CLIENT_ID,
-                            "code": code,
-                            "redirect_uri": DEFAULT_REDIRECT_URI,
-                            "code_verifier": code_verifier,
-                        },
-                        headers={
-                            "Content-Type": "application/x-www-form-urlencoded",
-                            "User-Agent": ua,
-                        },
-                        proxies=proxies,
-                        timeout=25,
-                        verify=False,
-                    )
-                    if token_resp.status_code == 200:
-                        token_data = token_resp.json()
-                        access_token = str(token_data.get("access_token") or "").strip()
-                        refresh_token = str(token_data.get("refresh_token") or "").strip()
-                        id_token = str(token_data.get("id_token") or "").strip()
             except Exception as e:
                 logger.warning(f"OAuth PKCE 异常: {e}")
+
+        if code:
+            log(f"成功获取 OAuth 授权码 (code: {code[:10]}...)，正在换取 Access Token...")
+            try:
+                token_resp = requests.post(
+                    "https://auth.openai.com/oauth/token",
+                    data={
+                        "grant_type": "authorization_code",
+                        "client_id": CLIENT_ID,
+                        "code": code,
+                        "redirect_uri": DEFAULT_REDIRECT_URI,
+                        "code_verifier": code_verifier,
+                    },
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "User-Agent": ua,
+                    },
+                    proxies=proxies,
+                    timeout=25,
+                    verify=False,
+                )
+                if token_resp.status_code == 200:
+                    token_data = token_resp.json()
+                    access_token = str(token_data.get("access_token") or "").strip()
+                    refresh_token = str(token_data.get("refresh_token") or "").strip()
+                    id_token = str(token_data.get("id_token") or "").strip()
+                    log(f"✅ 成功换取 API Access Token (长度: {len(access_token)}) 与 Refresh Token")
+                else:
+                    log(f"⚠️ /oauth/token 换取失败 HTTP {token_resp.status_code}: {token_resp.text[:100]}")
+            except Exception as e:
+                logger.warning(f"/oauth/token 请求异常: {e}")
+
+        # 策略 4: 备用尝试从 Web Session 提取
+        if not access_token and target_continue_url:
+            sess_token = extract_session_token(session, target_continue_url, proxy=proxy)
+            if sess_token:
+                log(f"成功从 Web 会话提取 Access Token (长度: {len(sess_token)})")
+                access_token = sess_token
 
         if not access_token:
             err = f"未能提取到有效 access_token (target_url: {target_continue_url[:80]})"

@@ -167,38 +167,29 @@ def init_auth_session(
     if has_session and did and ua:
         return did, ua
 
-    # 2. 纯 Python 原生 NextAuth 会话握手回退机制 (跨平台/Docker 容器通用)
-    ua = ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    # 2. 纯 Python 原生会话握手回退机制 (跨平台/Docker 容器通用)
+    ua = ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
     try:
         session.headers.update({
             "User-Agent": ua,
             "Accept-Language": "en-US,en;q=0.9",
         })
-        session.get("https://chatgpt.com/", proxies=proxies, timeout=15, verify=verify)
-        csrf_resp = session.get("https://chatgpt.com/api/auth/csrf", proxies=proxies, timeout=15, verify=verify)
-        csrf_token = ""
-        if csrf_resp.status_code == 200:
-            try:
-                csrf_token = csrf_resp.json().get("csrfToken") or ""
-            except Exception:
-                pass
-
-        if csrf_token:
-            clean_email = email.strip()
-            signin_url = (
-                f"https://chatgpt.com/api/auth/signin/openai"
-                f"?prompt=login&screen_hint=login_or_signup&login_hint={urllib.parse.quote(clean_email)}"
-            )
-            session.post(
-                signin_url,
-                data={"csrfToken": csrf_token, "callbackUrl": "https://chatgpt.com/"},
-                proxies=proxies,
-                allow_redirects=True,
-                timeout=20,
-                verify=verify,
-            )
+        # 优先通过官方 OAuth 授权端点直接初始化 auth.openai.com 认证会话与 DID
+        oauth_init_params = {
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "response_type": "code",
+            "redirect_uri": "http://localhost:1455/auth/callback",
+            "scope": "openid profile email offline_access",
+            "state": str(uuid.uuid4().hex),
+            "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            "code_challenge_method": "S256",
+            "screen_hint": "signup",
+            "prompt": "create",
+        }
+        oauth_init_url = f"https://auth.openai.com/oauth/authorize?{urllib.parse.urlencode(oauth_init_params)}"
+        session.get(oauth_init_url, proxies=proxies, timeout=20, allow_redirects=True, verify=verify)
     except Exception as exc:
-        logger.warning(f"[auth_solver] Native Python NextAuth handshake error: {exc}")
+        logger.warning(f"[auth_solver] Native Python auth session handshake error: {exc}")
 
     # 优先使用 OpenAI 签发的 oai-did，若无则生成随机指纹
     cookie_did = session.cookies.get("oai-did")

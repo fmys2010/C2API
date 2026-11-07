@@ -65,12 +65,12 @@ class ChatRequirements:
     raw_finalize: Optional[Dict[str, Any]] = None
 
 
-DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
+DEFAULT_CLIENT_VERSION = "prod-1bf7707f66dc38bf8610abb0903d983ada8242d9"
 DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
-CODEX_RESPONSES_MODEL = "gpt-5.5"
-SEARCH_MODEL = "gpt-5-5"
+CODEX_RESPONSES_MODEL = "gpt-6"
+SEARCH_MODEL = "gpt-6"
 SEARCH_TIMEOUT_SECS = 300.0
 SEARCH_POLL_INTERVAL_SECS = 3.0
 SEARCH_DONE_STATUS = {"finished_successfully", "finished_partial_completion"}
@@ -566,12 +566,12 @@ class OpenAIBackendAPI:
         _, base_model = split_image_model(model)
         if not base_model:
             return "auto", ""
-        if base_model == "gpt-image-2":
-            upstream_model = config.default_upstream_model_name
-        elif base_model == CODEX_IMAGE_MODEL:
+        if base_model in {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5", CODEX_IMAGE_MODEL}:
             upstream_model = base_model
+        elif base_model == "gpt-image-2":
+            upstream_model = "gpt-image-2.5"
         else:
-            return "auto", ""
+            upstream_model = base_model
         model_name, separator, suffix = upstream_model.rpartition("-")
         if separator and suffix.lower() in {"standard", "extended", "max"}:
             return model_name, suffix.lower()

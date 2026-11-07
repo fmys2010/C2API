@@ -6,11 +6,19 @@ from typing import Any
 from services.account_service import account_service
 from services.openai_backend_api import OpenAIBackendAPI
 
-WEB_SEARCH_TOOL_TYPES = {"web_search", "web_search_preview", "web_search_preview_2025_03_11"}
+WEB_SEARCH_TOOL_TYPES = {
+    "web_search",
+    "web_search_preview",
+    "web_search_preview_2025_03_11",
+    "deep_research",
+    "deep_research_preview",
+}
 SEARCH_CHAT_MODEL_PREFIXES = (
+    "gpt-6-search",
+    "gpt-6-search-preview",
+    "gpt-5-search-api",
     "gpt-4o-search-preview",
     "gpt-4o-mini-search-preview",
-    "gpt-5-search-api",
 )
 
 
