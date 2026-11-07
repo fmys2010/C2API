@@ -502,36 +502,25 @@ class AccountService:
         return None
 
     def ping_account_heartbeat(self, access_token: str) -> bool:
-        """轻量心跳保活（防 OpenAI 3~5 分钟空闲超时），优先访问 /backend-api/me"""
+        """轻量心跳保活（防 OpenAI 3~5 分钟空闲超时），通过 OpenAIBackendAPI 访问 /backend-api/me"""
         account = self.get_account(access_token)
         if not account:
             return False
         token = str(account.get("access_token") or access_token)
-        device_id = str(account.get("device_id") or uuid.uuid4())
-
-        session_kwargs = {"impersonate": "chrome120", "verify": False, "timeout": 15}
-        proxy = account.get("proxy") or config.get_proxy_settings()
-        if proxy:
-            session_kwargs["proxy"] = proxy
 
         try:
-            from curl_cffi import requests
-            s = requests.Session(**session_kwargs)
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "User-Agent": self._OAUTH_USER_AGENT,
-                "Accept": "application/json",
-                "Origin": "https://chatgpt.com",
-                "Referer": "https://chatgpt.com/",
-                "oai-device-id": device_id,
-            }
-            r = s.get("https://chatgpt.com/backend-api/me", headers=headers)
-            if r.status_code == 200:
-                self.update_account(token, {"status": "正常", "invalid_count": 0}, quiet=True)
-                return True
-            elif r.status_code == 401:
-                # 收到 401 (token_revoked)，启动容灾自愈
-                return self.recover_account_disaster(token)
+            from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
+            backend = OpenAIBackendAPI(token)
+            try:
+                me = backend._get_me()
+                if me and (me.get("id") or me.get("email")):
+                    self.update_account(token, {"status": "正常", "invalid_count": 0}, quiet=True)
+                    return True
+            finally:
+                backend.close()
+        except InvalidAccessTokenError:
+            # 收到 401 (token_revoked)，启动容灾自愈
+            return self.recover_account_disaster(token)
         except Exception as e:
             logger.debug(f"Heartbeat ping error for {account.get('email')}: {e}")
         return False
@@ -543,6 +532,7 @@ class AccountService:
             return False
 
         email = str(account.get("email") or "").strip()
+        source_type = str(account.get("source_type") or "").strip()
 
         # 1. 尝试方案 C: Web Session 续期
         if account.get("session_token"):
@@ -551,9 +541,9 @@ class AccountService:
                 logger.info(f"账号 {email} 通过方案 C (Web Session) 自愈复活成功")
                 return True
 
-        # 2. 尝试方案 B: 密码重新登录
+        # 2. 尝试方案 B: 密码重新登录 (严禁用于 web_register 账号，避免触发手机号风控)
         pwd = str(account.get("password") or "").strip()
-        if email and pwd and pwd != "Passwordless_Web":
+        if source_type != "web_register" and email and pwd and pwd != "Passwordless_Web":
             try:
                 res_b = self._login_with_password(email, pwd)
                 if res_b.get("ok"):
