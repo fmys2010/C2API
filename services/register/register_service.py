@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "concurrency": 1,
     "check_interval_seconds": 60,
     "mail_mode": "gmail",  # "gmail" | "imap"
-    "domains": "nomorera2.de,mx1.nomorera2.de",
+    "domains": "nomorera2.de",
     "gmail_address": "",
     "gmail_app_password": "",
     "imap_host": "",

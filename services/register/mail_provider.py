@@ -30,6 +30,8 @@ def _extract_otp_code(raw_html: str) -> Optional[str]:
     clean = unescape(clean)
 
     patterns = [
+        r">\s*(\d{6})\s*<",
+        r"(?i)Your (?:ChatGPT|OpenAI) verification code is\s*(\d{6})",
         r"(?i)Your (?:ChatGPT|OpenAI) code is\s*(\d{6})",
         r"(?i)(?:ChatGPT|OpenAI) code is\s*(\d{6})",
         r"(?i)verification code to continue:\s*(\d{6})",
@@ -207,7 +209,7 @@ class GmailMailProvider(BaseMailProvider):
             try:
                 client = self._connect_imap()
                 client.select("INBOX")
-                status, data = client.search(None, "UNSEEN")
+                status, data = client.search(None, "ALL")
                 if status == "OK" and data and data[0]:
                     msg_nums = data[0].split()
                     for num in reversed(msg_nums[-15:]):
@@ -317,7 +319,7 @@ class GenericImapMailProvider(BaseMailProvider):
             try:
                 client = self._connect_imap()
                 client.select("INBOX")
-                status, data = client.search(None, "UNSEEN")
+                status, data = client.search(None, "ALL")
                 if status == "OK" and data and data[0]:
                     msg_nums = data[0].split()
                     for num in reversed(msg_nums[-15:]):
