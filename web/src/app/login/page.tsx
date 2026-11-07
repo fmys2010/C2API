@@ -57,9 +57,7 @@ export default function LoginPage() {
 
       <form onSubmit={(event) => void handleLogin(event)} className="w-full max-w-[360px] space-y-6">
         <div className="space-y-3">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-primary text-base font-bold text-primary-foreground">
-            C2
-          </span>
+          <img src="/brand-icon.png" alt="" className="size-10 rounded-full" />
           <div className="space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight text-foreground">登录 chatgpt2api</h1>
             <p className="text-sm text-muted-foreground">输入管理员或用户密钥以进入管理面板。</p>

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import {
   Bot,
-  Bug,
   ChevronsUpDown,
   Images,
   LogOut,
@@ -33,7 +32,6 @@ const adminNav: NavGroup[] = [
     items: [
       { href: "/image", label: "图片生成", icon: Sparkles },
       { href: "/image-manager", label: "图片管理", icon: Images },
-      { href: "/debug", label: "调试", icon: Bug },
     ],
   },
   {
@@ -66,9 +64,7 @@ function normalizePath(pathname: string) {
 
 function BrandMark() {
   return (
-    <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-[13px] font-bold text-primary-foreground">
-      C2
-    </span>
+    <img src="/brand-icon.png" alt="" className="size-7 shrink-0 rounded-full" />
   );
 }
 
@@ -176,7 +172,7 @@ function AppNavigation({ pathname }: { pathname: string }) {
         <div className="flex min-h-0 flex-col gap-6">
           <Link href={session.role === "admin" ? "/accounts" : "/image"} className="flex items-center gap-2.5 px-1">
             <BrandMark />
-            <span className="text-sm font-semibold tracking-tight text-foreground">chatgpt2api</span>
+            <span className="text-sm font-semibold tracking-tight text-foreground">C2API</span>
           </Link>
           <div className="hide-scrollbar min-h-0 overflow-y-auto">
             <NavLinks groups={groups} pathname={pathname} />
@@ -196,7 +192,7 @@ function AppNavigation({ pathname }: { pathname: string }) {
             <SheetHeader className="p-0">
               <SheetTitle className="flex items-center gap-2.5 text-sm font-semibold text-foreground">
                 <BrandMark />
-                chatgpt2api
+                C2API
               </SheetTitle>
             </SheetHeader>
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -214,7 +210,7 @@ function AppNavigation({ pathname }: { pathname: string }) {
           </SheetContent>
         </Sheet>
         <BrandMark />
-        <span className="text-sm font-semibold tracking-tight text-foreground">chatgpt2api</span>
+        <span className="text-sm font-semibold tracking-tight text-foreground">C2API</span>
       </header>
     </>
   );
