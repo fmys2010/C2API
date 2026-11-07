@@ -80,34 +80,53 @@ def sanitize_sub2api_servers(servers: list[dict]) -> list[dict]:
 
 
 def start_limited_account_watcher(stop_event: Event) -> Thread:
-    interval_seconds = config.refresh_account_interval_minute * 60
-
     def worker() -> None:
+        import time
+        last_patrol_time = 0.0
         while not stop_event.is_set():
             try:
-                limited_tokens = account_service.list_limited_tokens()
+                now = time.time()
+                patrol_interval_seconds = max(60, config.refresh_account_interval_minute * 60)
+                keepalive_interval_seconds = getattr(config, "account_keepalive_interval_seconds", 120)
+
+                # 1. 方案 C: 常驻轻量保活心跳（默认每 2 分钟心跳一次，防止 OpenAI 3~5 分钟空闲超时）
                 normal_tokens = account_service.list_normal_tokens()
-                expiring_tokens = account_service.list_expiring_access_tokens()
-                keepalive_tokens = account_service.list_refresh_token_keepalive_tokens()
-                tokens = list(dict.fromkeys([*limited_tokens, *normal_tokens, *expiring_tokens]))
-                expiring_token_set = set(expiring_tokens)
-                keepalive_tokens = [token for token in keepalive_tokens if token not in expiring_token_set]
-                if tokens:
-                    print(
-                        "[account-watcher] checking "
-                        f"{len(limited_tokens)} limited accounts, "
-                        f"{len(normal_tokens)} normal accounts, "
-                        f"{len(expiring_tokens)} expiring access tokens"
-                    )
-                    account_service.refresh_accounts(tokens)
-                if keepalive_tokens:
-                    print(f"[account-watcher] keepalive {len(keepalive_tokens)} refresh tokens")
-                    result = account_service.keepalive_refresh_tokens(keepalive_tokens)
-                    if result.get("errors"):
-                        print(f"[account-watcher] keepalive errors: {result['errors']}")
+                if normal_tokens:
+                    for token in normal_tokens:
+                        if stop_event.is_set():
+                            break
+                        try:
+                            account_service.ping_account_heartbeat(token)
+                        except Exception as pe:
+                            print(f"[account-watcher] heartbeat error: {pe}")
+
+                # 2. 定期全量巡检（默认 5 分钟一次，巡检限流、过期、配额与异常状态）
+                if now - last_patrol_time >= patrol_interval_seconds:
+                    last_patrol_time = now
+                    limited_tokens = account_service.list_limited_tokens()
+                    expiring_tokens = account_service.list_expiring_access_tokens()
+                    keepalive_tokens = account_service.list_refresh_token_keepalive_tokens()
+                    tokens = list(dict.fromkeys([*limited_tokens, *normal_tokens, *expiring_tokens]))
+                    expiring_token_set = set(expiring_tokens)
+                    keepalive_tokens = [token for token in keepalive_tokens if token not in expiring_token_set]
+                    if tokens:
+                        print(
+                            "[account-watcher] patrolling "
+                            f"{len(limited_tokens)} limited accounts, "
+                            f"{len(normal_tokens)} normal accounts, "
+                            f"{len(expiring_tokens)} expiring access tokens"
+                        )
+                        account_service.refresh_accounts(tokens)
+                    if keepalive_tokens:
+                        print(f"[account-watcher] keepalive {len(keepalive_tokens)} refresh tokens")
+                        result = account_service.keepalive_refresh_tokens(keepalive_tokens)
+                        if result.get("errors"):
+                            print(f"[account-watcher] keepalive errors: {result['errors']}")
             except Exception as exc:
                 print(f"[account-watcher] fail {exc}")
-            stop_event.wait(interval_seconds)
+
+            keepalive_interval = getattr(config, "account_keepalive_interval_seconds", 120)
+            stop_event.wait(keepalive_interval)
 
     thread = Thread(target=worker, name="account-watcher", daemon=True)
     thread.start()

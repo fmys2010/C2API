@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import unittest
 
-from services.register.auth_solver import generate_sentinel_payload, init_auth_session
-from services.register.mail_provider import DuckMailProvider, _extract_otp_code, create_mail_provider
+from services.register.auth_solver import generate_sentinel_payload
+from services.register.mail_provider import GmailMailProvider, _extract_otp_code, create_mail_provider
 from services.register.proxy_pool import ProxyPool
 from services.register.register_service import register_service
 
@@ -50,8 +50,8 @@ class RegistrationEngineTests(unittest.TestCase):
         self.assertIsNone(_extract_otp_code("No numbers here"))
 
     def test_mail_provider_factory(self):
-        duck = create_mail_provider({"mail_mode": "duckmail", "duckmail_domain": "test.com"})
-        self.assertIsInstance(duck, DuckMailProvider)
+        gmail = create_mail_provider({"mail_mode": "gmail_imap", "gmail_account": "test@gmail.com", "gmail_app_password": "pwd"})
+        self.assertIsInstance(gmail, GmailMailProvider)
 
     def test_register_service_lifecycle(self):
         status = register_service.get_status()

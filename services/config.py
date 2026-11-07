@@ -467,6 +467,19 @@ class ConfigStore:
             return 2.0
 
     @property
+    def account_keepalive_interval_seconds(self) -> int:
+        """常驻保活心跳频率（秒），默认 120 秒以防止 OpenAI 3~5 分钟空闲超时。"""
+        try:
+            return max(30, int(self.data.get("account_keepalive_interval_seconds", 120)))
+        except (TypeError, ValueError):
+            return 120
+
+    @property
+    def default_register_password(self) -> str:
+        """注册账号时使用的密码模板。为空则自动为每个账号生成高强度独立随机密码。"""
+        return str(self.data.get("default_register_password") or "").strip()
+
+    @property
     def auto_remove_invalid_accounts(self) -> bool:
         value = self.data.get("auto_remove_invalid_accounts", False)
         if isinstance(value, str):
@@ -563,6 +576,8 @@ class ConfigStore:
     def get(self) -> dict[str, object]:
         data = dict(self.data)
         data["refresh_account_interval_minute"] = self.refresh_account_interval_minute
+        data["account_keepalive_interval_seconds"] = self.account_keepalive_interval_seconds
+        data["default_register_password"] = self.default_register_password
         data["image_retention_days"] = self.image_retention_days
         data["image_poll_timeout_secs"] = self.image_poll_timeout_secs
         data["image_poll_interval_secs"] = self.image_poll_interval_secs

@@ -166,6 +166,8 @@ export type SettingsConfig = {
     prompt?: string;
   };
   refresh_account_interval_minute?: number | string;
+  account_keepalive_interval_seconds?: number | string;
+  default_register_password?: string;
   image_retention_days?: number | string;
   image_poll_timeout_secs?: number | string;
   image_account_concurrency?: number | string;

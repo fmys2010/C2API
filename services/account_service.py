@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import secrets
 import time
 import uuid
+
+logger = logging.getLogger(__name__)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -232,6 +235,9 @@ class AccountService:
         normalized["success"] = int(normalized.get("success") or 0)
         normalized["fail"] = int(normalized.get("fail") or 0)
         normalized["invalid_count"] = int(normalized.get("invalid_count") or 0)
+        normalized["session_token"] = normalized.get("session_token") or None
+        normalized["password"] = normalized.get("password") or None
+        normalized["device_id"] = normalized.get("device_id") or None
         normalized["last_used_at"] = normalized.get("last_used_at")
         normalized["last_invalid_at"] = normalized.get("last_invalid_at") or None
         normalized["last_refresh_error"] = normalized.get("last_refresh_error") or None
@@ -404,6 +410,8 @@ class AccountService:
                 next_item["refresh_token"] = str(token_data.get("refresh_token") or "").strip()
             if token_data.get("id_token"):
                 next_item["id_token"] = str(token_data.get("id_token") or "").strip()
+            if token_data.get("session_token"):
+                next_item["session_token"] = str(token_data.get("session_token") or "").strip()
             next_item["last_token_refresh_at"] = now
             next_item["last_token_refresh_error"] = None
             next_item["last_token_refresh_error_at"] = None
@@ -434,6 +442,150 @@ class AccountService:
         )
         return new_token
 
+    def refresh_web_session(self, access_token: str) -> dict[str, Any] | None:
+        """方案 C: 利用 NextAuth Session Cookie 刷新 Web 会话与 AccessToken"""
+        account = self.get_account(access_token)
+        if not account:
+            return None
+        session_token = str(account.get("session_token") or "").strip()
+        if not session_token:
+            return None
+
+        device_id = str(account.get("device_id") or uuid.uuid4())
+        ua = self._OAUTH_USER_AGENT
+
+        session_kwargs = {"impersonate": "chrome120", "verify": False, "timeout": 20}
+        proxy = account.get("proxy") or config.get_proxy_settings()
+        if proxy:
+            session_kwargs["proxy"] = proxy
+
+        try:
+            from curl_cffi import requests
+            s = requests.Session(**session_kwargs)
+            s.cookies.set("__Secure-next-auth.session-token", session_token, domain=".chatgpt.com")
+            s.cookies.set("oai-did", device_id, domain=".chatgpt.com")
+
+            headers = {
+                "User-Agent": ua,
+                "Accept": "application/json",
+                "oai-device-id": device_id,
+                "Referer": "https://chatgpt.com/",
+                "Origin": "https://chatgpt.com",
+            }
+
+            resp = s.get("https://chatgpt.com/api/auth/session", headers=headers)
+            if resp.status_code == 200:
+                data = resp.json() if resp.text else {}
+                new_token = str(data.get("accessToken") or "").strip()
+                if new_token:
+                    rotated_session = s.cookies.get("__Secure-next-auth.session-token") or session_token
+                    token_data = {
+                        "access_token": new_token,
+                        "session_token": rotated_session,
+                    }
+                    new_token = self._apply_refreshed_tokens(access_token, token_data, "refresh_web_session")
+                    self.update_account(new_token, {"status": "正常", "invalid_count": 0}, quiet=True)
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "Web会话刷新AccessToken成功",
+                        {
+                            "email": account.get("email"),
+                            "old_token": anonymize_token(access_token),
+                            "new_token": anonymize_token(new_token),
+                        },
+                    )
+                    return self.get_account(new_token)
+            elif resp.status_code in (401, 403):
+                logger.info(f"Web session expired for {account.get('email')} (HTTP {resp.status_code})")
+        except Exception as exc:
+            logger.warning(f"Web session refresh error for {account.get('email')}: {exc}")
+        return None
+
+    def ping_account_heartbeat(self, access_token: str) -> bool:
+        """轻量心跳保活（防 OpenAI 3~5 分钟空闲超时），优先访问 /backend-api/me"""
+        account = self.get_account(access_token)
+        if not account:
+            return False
+        token = str(account.get("access_token") or access_token)
+        device_id = str(account.get("device_id") or uuid.uuid4())
+
+        session_kwargs = {"impersonate": "chrome120", "verify": False, "timeout": 15}
+        proxy = account.get("proxy") or config.get_proxy_settings()
+        if proxy:
+            session_kwargs["proxy"] = proxy
+
+        try:
+            from curl_cffi import requests
+            s = requests.Session(**session_kwargs)
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "User-Agent": self._OAUTH_USER_AGENT,
+                "Accept": "application/json",
+                "Origin": "https://chatgpt.com",
+                "Referer": "https://chatgpt.com/",
+                "oai-device-id": device_id,
+            }
+            r = s.get("https://chatgpt.com/backend-api/me", headers=headers)
+            if r.status_code == 200:
+                self.update_account(token, {"status": "正常", "invalid_count": 0}, quiet=True)
+                return True
+            elif r.status_code == 401:
+                # 收到 401 (token_revoked)，启动容灾自愈
+                return self.recover_account_disaster(token)
+        except Exception as e:
+            logger.debug(f"Heartbeat ping error for {account.get('email')}: {e}")
+        return False
+
+    def recover_account_disaster(self, access_token: str) -> bool:
+        """C+B 容灾自愈链：当 AccessToken 异常或被吊销时依次尝试 C (Session) 和 B (Password) 恢复。"""
+        account = self.get_account(access_token)
+        if not account:
+            return False
+
+        email = str(account.get("email") or "").strip()
+
+        # 1. 尝试方案 C: Web Session 续期
+        if account.get("session_token"):
+            res_c = self.refresh_web_session(access_token)
+            if res_c:
+                logger.info(f"账号 {email} 通过方案 C (Web Session) 自愈复活成功")
+                return True
+
+        # 2. 尝试方案 B: 密码重新登录
+        pwd = str(account.get("password") or "").strip()
+        if email and pwd and pwd != "Passwordless_Web":
+            try:
+                res_b = self._login_with_password(email, pwd)
+                if res_b.get("ok"):
+                    new_access_token = str(res_b.get("access_token") or "")
+                    token_data = {
+                        "access_token": new_access_token,
+                        "refresh_token": str(res_b.get("refresh_token") or ""),
+                        "id_token": str(res_b.get("id_token") or ""),
+                    }
+                    self._apply_refreshed_tokens(access_token, token_data, "disaster_recovery_password")
+                    self.update_account(new_access_token, {
+                        "source_type": res_b.get("source_type", "password"),
+                        "status": "正常",
+                        "invalid_count": 0,
+                        "last_invalid_at": None,
+                    }, quiet=True)
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "密码重登自愈成功",
+                        {"email": email, "token": anonymize_token(new_access_token)},
+                    )
+                    logger.info(f"账号 {email} 通过方案 B (密码重新登录) 自愈复活成功！")
+                    return True
+                else:
+                    logger.warning(f"账号 {email} 方案 B 密码登录失败: {res_b.get('error')}")
+            except Exception as exc:
+                logger.warning(f"账号 {email} 方案 B 密码登录异常: {exc}")
+
+        # 3. 方案 C 与 B 均失败 -> 进入安全状态机记录
+        self.remove_invalid_token(access_token, "c_and_b_disaster_failed")
+        return False
+
     def refresh_access_token(self, access_token: str, *, force: bool = False, event: str = "refresh_access_token") -> str:
         if not access_token:
             return ""
@@ -446,6 +598,22 @@ class AccountService:
                 return active_token
             refresh_token = str(account.get("refresh_token") or "").strip()
             if not refresh_token:
+                # 方案 C: 尝试通过 Web Session Cookie 刷新 AccessToken
+                session_token = str(account.get("session_token") or "").strip()
+                if session_token:
+                    web_res = self.refresh_web_session(active_token)
+                    if web_res and web_res.get("access_token"):
+                        return str(web_res.get("access_token"))
+                # 方案 B: 若存在密码则尝试重新登录自愈
+                email = str(account.get("email") or "").strip()
+                password = str(account.get("password") or "").strip()
+                if email and password and password != "Passwordless_Web":
+                    t = Thread(
+                        target=self._password_re_login_thread,
+                        args=(active_token, email, password, event),
+                        daemon=True,
+                    )
+                    t.start()
                 return active_token
             if not force and self._recent_token_refresh_error(account):
                 return active_token
@@ -1050,15 +1218,42 @@ class AccountService:
             self._save_accounts()
 
     def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False) -> bool:
-        if not config.auto_remove_invalid_accounts:
-            self.update_account(access_token, {"status": "异常", "quota": 0}, quiet=quiet)
+        account = self.get_account(access_token)
+        invalid_count = int((account or {}).get("invalid_count") or 0) + 1
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # 防误删状态机：首次失败 (invalid_count <= 1) 仅标记异常，留存容灾自愈窗口
+        if invalid_count <= 1 or not config.auto_remove_invalid_accounts:
+            self.update_account(
+                access_token,
+                {
+                    "status": "异常",
+                    "quota": 0,
+                    "invalid_count": invalid_count,
+                    "last_invalid_at": now_iso,
+                },
+                quiet=quiet,
+            )
             return False
+
         removed = bool(self.delete_accounts([access_token])["removed"])
         if removed:
-            log_service.add(LOG_TYPE_ACCOUNT, "自动移除异常账号",
-                            {"source": event, "token": anonymize_token(access_token)})
+            log_service.add(
+                LOG_TYPE_ACCOUNT,
+                "自动移除异常账号",
+                {"source": event, "token": anonymize_token(access_token), "invalid_count": invalid_count},
+            )
         elif access_token:
-            self.update_account(access_token, {"status": "异常", "quota": 0}, quiet=quiet)
+            self.update_account(
+                access_token,
+                {
+                    "status": "异常",
+                    "quota": 0,
+                    "invalid_count": invalid_count,
+                    "last_invalid_at": now_iso,
+                },
+                quiet=quiet,
+            )
         return removed
 
     def get_account(self, access_token: str) -> dict | None:

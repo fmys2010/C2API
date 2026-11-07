@@ -160,7 +160,44 @@ def register_single_account(
         page_type = str((signup_data.get("page") or {}).get("type") or "")
         cont_url = str(signup_data.get("continue_url") or "")
         log(f"账号提交成功，会话流转至: {page_type or cont_url}")
-        log("✅ 验证码邮件已成功派发至邮箱")
+
+        # 4.1 提交并绑定独立密码 (方案 B: 账号密码容灾自愈基础)
+        from services.config import config
+        default_pwd = getattr(config, "default_register_password", "")
+        if default_pwd:
+            account_password = default_pwd
+        else:
+            account_password = f"P@ss{secrets.token_urlsafe(12)}"
+
+        log("正在提交账号密码注册并请求派发验证码...")
+        sentinel_pwd = generate_sentinel_payload(
+            did=did,
+            flow="username_password_create",
+            proxy=proxy,
+            user_agent=ua,
+            ctx=reg_ctx,
+        )
+        pwd_headers = {
+            "user-agent": ua,
+            "accept": "application/json",
+            "content-type": "application/json",
+            "oai-device-id": did,
+            "origin": "https://auth.openai.com",
+            "referer": "https://auth.openai.com/create-account/password",
+            "openai-sentinel-token": sentinel_pwd,
+        }
+        pwd_headers.update(_make_trace_headers())
+        pwd_resp = session.post(
+            "https://auth.openai.com/api/accounts/user/register",
+            headers=pwd_headers,
+            json={"username": email_addr, "password": account_password},
+            timeout=20,
+            verify=False,
+        )
+        if pwd_resp.status_code == 200:
+            log("✅ 独立密码绑定成功，已触发邮箱验证码派发")
+        else:
+            log(f"⚠️ 密码提交响应 HTTP {pwd_resp.status_code}: {pwd_resp.text[:100]}，继续验证流程")
 
         # 5. 轮询提取邮件验证码
         log("正在等待邮件到达并提取验证码...")
@@ -279,21 +316,26 @@ def register_single_account(
             log(f"❌ {err}")
             return {"success": False, "email": email_addr, "error": err}
 
+        # 提取 NextAuth 会话 Cookie 用于常驻心跳续期 (方案 C)
+        session_token = session.cookies.get("__Secure-next-auth.session-token") or ""
+
         # 9. 存入号池数据库 (SQLite accounts.db)
         account_item = {
             "access_token": access_token,
             "refresh_token": "",
+            "session_token": session_token,
             "id_token": "",
             "email": email_addr,
-            "password": "Passwordless_Web",
+            "password": account_password,
             "device_id": did,
             "status": "正常",
             "source_type": "web_register",
+            "invalid_count": 0,
             "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         res = account_service.add_account_items([account_item])
-        log(f"🎉 账号注册成功并存入号池！邮箱: {email_addr} (Token: {access_token[:12]}...{access_token[-8:]})")
+        log(f"🎉 账号注册成功并存入号池！邮箱: {email_addr} (Token: {access_token[:12]}...{access_token[-8:]}, 独立密码: 已绑定)")
 
         return {
             "success": True,

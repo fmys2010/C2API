@@ -23,6 +23,8 @@ export function ConfigCard() {
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
+  const setAccountKeepaliveIntervalSeconds = useSettingsStore((state) => state.setAccountKeepaliveIntervalSeconds);
+  const setDefaultRegisterPassword = useSettingsStore((state) => state.setDefaultRegisterPassword);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
   const setImagePollTimeoutSecs = useSettingsStore((state) => state.setImagePollTimeoutSecs);
   const setImageAccountConcurrency = useSettingsStore((state) => state.setImageAccountConcurrency);
@@ -90,14 +92,34 @@ export function ConfigCard() {
         </div>
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm text-stone-700">账号刷新间隔</label>
+            <label className="text-sm text-stone-700">账号巡检刷新间隔</label>
             <Input
               value={String(config?.refresh_account_interval_minute || "")}
               onChange={(event) => setRefreshAccountIntervalMinute(event.target.value)}
-              placeholder="分钟"
+              placeholder="5"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">单位分钟，控制账号自动刷新频率。</p>
+            <p className="text-xs text-stone-500">单位分钟，控制号池全量状态与额度巡检频率（默认 5 分钟）。</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">常驻保活心跳间隔 (秒)</label>
+            <Input
+              value={String(config?.account_keepalive_interval_seconds || "120")}
+              onChange={(event) => setAccountKeepaliveIntervalSeconds(event.target.value)}
+              placeholder="120"
+              className="h-10 rounded-xl border-stone-200 bg-white"
+            />
+            <p className="text-xs text-stone-500">单位秒，方案 C 轻量心跳频率，用于向 OpenAI 持续续约防止 3~5 分钟空闲超时（默认 120 秒）。</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">注册初始密码模板</label>
+            <Input
+              value={String(config?.default_register_password || "")}
+              onChange={(event) => setDefaultRegisterPassword(event.target.value)}
+              placeholder="留空自动为每账号生成独立高强度随机密码"
+              className="h-10 rounded-xl border-stone-200 bg-white"
+            />
+            <p className="text-xs text-stone-500">新账号注册并绑定至 OpenAI 的密码。留空将自动生成独立高强度随机密码并持久化存库用于方案 B 容灾。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">全局代理</label>
