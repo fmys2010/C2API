@@ -288,6 +288,9 @@ export default function RegisterPage() {
         : null
     );
     setConfig((prev) => ({ ...prev, mode: targetMode }));
+    if (!config.proxies_text.trim()) {
+      toast.info("未配置代理列表，将以直连网络模式执行注册任务");
+    }
 
     try {
       // 启动前先保存最新配置（确保 mode 与启动动作一致）
@@ -351,9 +354,14 @@ export default function RegisterPage() {
   };
 
   const handleTestProxy = async () => {
-    const proxy = testProxyInput.trim() || (config.proxies_text.split("\n")[0] || "").trim();
+    const fromList =
+      config.proxies_text
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l && !l.startsWith("#")) || "";
+    const proxy = testProxyInput.trim() || fromList;
     if (!proxy) {
-      toast.error("请输入待测试的代理 URL");
+      toast.error("请输入或在列表中配置待测试的代理 URL");
       return;
     }
     setTestingProxy(true);
@@ -828,22 +836,44 @@ export default function RegisterPage() {
                 <Globe className="size-3.5 text-cyan-400" />
                 <span>代理池网络管理</span>
               </div>
-              <span className="text-[11px] font-mono text-zinc-500">
-                {status?.proxy_stats?.total ?? 0} 个节点配置
-              </span>
+              {(status?.proxy_stats?.total ?? 0) === 0 ? (
+                <span className="text-[11px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                  0 个节点 (直连模式)
+                </span>
+              ) : (
+                <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                  {status?.proxy_stats?.healthy ?? 0}/{status?.proxy_stats?.total} 个可用节点
+                </span>
+              )}
             </div>
 
             <div className="space-y-2 font-mono">
-              <Label className="text-[11px] text-zinc-400">多行代理列表 (每次注册任务自动轮换)</Label>
+              <div className="flex items-center justify-between">
+                <Label className="text-[11px] text-zinc-400">多行代理列表 (每次注册任务自动轮换)</Label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const current = config.proxies_text.trim();
+                    if (!current.includes("127.0.0.1:7890")) {
+                      const next = current ? `${current}\nhttp://127.0.0.1:7890` : "http://127.0.0.1:7890";
+                      setConfig({ ...config, proxies_text: next });
+                      toast.info("已填入本机 Clash 代理 (127.0.0.1:7890)");
+                    }
+                  }}
+                  className="text-[10px] text-zinc-400 hover:text-emerald-400 transition-colors cursor-pointer"
+                >
+                  + 填入本机 127.0.0.1:7890
+                </button>
+              </div>
               <Textarea
                 rows={4}
                 value={config.proxies_text}
                 onChange={(e) => setConfig({ ...config, proxies_text: e.target.value })}
-                placeholder={"http://127.0.0.1:7890\nsocks5://user:pass@host:1080\nhttp://ip:port"}
+                placeholder={"# 每行填写一个代理节点 (支持 HTTP/SOCKS5)，例如：\n# http://127.0.0.1:7890\n# socks5://127.0.0.1:1080\n# http://username:password@ip:port"}
                 className="rounded-lg border-white/[0.08] bg-black/40 text-xs font-mono text-zinc-200 resize-y"
               />
               <span className="text-[10px] text-zinc-500 block leading-tight">
-                支持 http:// 与 socks5://；如为空则使用服务器网络直连。
+                支持 http:// 与 socks5://；如为空则使用服务器网络直连（海外 VPS 直连可用，国内环境建议配置代理）。
               </span>
             </div>
 

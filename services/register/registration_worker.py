@@ -165,7 +165,7 @@ def register_single_account(
     log(f"已申请注册邮箱: {masked_email}")
 
     # 2. 初始化 HTTP 客户端 Session (Chrome 浏览器指纹)
-    session = requests.Session(proxies=proxies, impersonate="chrome110")
+    session = requests.Session(proxies=proxies, impersonate="chrome")
     session.headers.update({"Connection": "close"})
     session.timeout = 30
 
@@ -174,6 +174,13 @@ def register_single_account(
         did, ua = init_auth_session(session, email_addr, proxy=proxy)
         reg_ctx: dict[str, Any] = {}
         log(f"设备指纹就绪 (DID: {did[:8]}...{did[-4:]})")
+
+        # 检查是否成功建立有效的 OpenAI 认证会话凭证，避免无凭证发起提交导致 HTTP 409 (invalid_state)
+        has_auth_session = any("auth-session" in c.name for c in session.cookies.jar)
+        if not has_auth_session:
+            err = "初始化认证会话失败：未获取到 OpenAI 认证 Session Cookie (直连受限或代理节点被 Cloudflare 403 拦截)"
+            log(f"❌ {err}")
+            return {"success": False, "email": email_addr, "error": err, "is_403": True}
 
         # 4. 生成 OAuth PKCE 挑战参数
         state = secrets.token_urlsafe(16)
@@ -215,6 +222,11 @@ def register_single_account(
         if signup_resp.status_code == 403:
             err = "OpenAI 触发 403 风控拦截 (IP/节点受限)"
             log(f"⚠️ {err}")
+            return {"success": False, "email": email_addr, "error": err, "is_403": True}
+
+        if signup_resp.status_code == 409:
+            err = f"OpenAI 认证会话失效 (HTTP 409: {signup_resp.text[:100]})"
+            log(f"❌ {err}")
             return {"success": False, "email": email_addr, "error": err, "is_403": True}
 
         if signup_resp.status_code != 200:

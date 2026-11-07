@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import types
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -21,14 +22,30 @@ _AUTH_CORE = None
 _AUTH_CORE_LOADED = False
 
 
-def _get_core_pyd_path() -> Path | None:
+def _get_core_binary_path() -> Path | None:
+    import platform
     current_dir = Path(__file__).resolve().parent
-    local_pyd = current_dir / "core" / "auth_core.pyd"
-    if local_pyd.exists():
-        return local_pyd
-    cpa_pyd = Path(r"D:\openai-cpa\utils\auth_core.pyd")
-    if cpa_pyd.exists():
-        return cpa_pyd
+    core_dir = current_dir / "core"
+    
+    if sys.platform == "win32":
+        candidates = [core_dir / "auth_core.pyd", Path(r"D:\openai-cpa\utils\auth_core.pyd")]
+    elif sys.platform == "darwin":
+        candidates = [core_dir / "auth_core.cpython-311-darwin.so"]
+    elif sys.platform.startswith("linux"):
+        machine = platform.machine().lower()
+        if machine in ("aarch64", "arm64"):
+            candidates = [core_dir / "auth_core.cpython-311-aarch64-linux-gnu.so"]
+        else:
+            candidates = [core_dir / "auth_core.cpython-311-x86_64-linux-gnu.so"]
+    else:
+        candidates = []
+
+    # 针对 cpython-311 编译的动态库，若运行时主次版本不匹配则直接走原生 Python 方案
+    for p in candidates:
+        if p.exists():
+            if "-311-" in p.name and sys.version_info[:2] != (3, 11):
+                continue
+            return p
     return None
 
 
@@ -37,9 +54,9 @@ def _load_auth_core():
     if _AUTH_CORE_LOADED:
         return _AUTH_CORE
 
-    pyd_path = _get_core_pyd_path()
+    pyd_path = _get_core_binary_path()
     if not pyd_path:
-        logger.warning("[auth_solver] auth_core.pyd not found, will use Python fallback")
+        logger.info("[auth_solver] Native auth_core binary not found for platform, will use pure Python NextAuth solver")
         _AUTH_CORE_LOADED = True
         return None
 
@@ -58,7 +75,7 @@ def _load_auth_core():
         # 2. 通过 importlib 加载为 utils.auth_core
         spec = importlib.util.spec_from_file_location("utils.auth_core", str(pyd_path))
         if not spec or not spec.loader:
-            raise RuntimeError("Cannot create spec for auth_core")
+            raise RuntimeError(f"Cannot create spec for auth_core from {pyd_path}")
         module = importlib.util.module_from_spec(spec)
         sys.modules["utils.auth_core"] = module
         spec.loader.exec_module(module)
@@ -70,9 +87,9 @@ def _load_auth_core():
         module.verify_lease_signature = lambda *a, **k: True
 
         _AUTH_CORE = module
-        logger.info("[auth_solver] auth_core.pyd loaded successfully with license bypass mock")
+        logger.info("[auth_solver] auth_core loaded successfully with license bypass mock")
     except Exception as exc:
-        logger.error(f"[auth_solver] Failed to load auth_core.pyd: {exc}", exc_info=True)
+        logger.warning(f"[auth_solver] Failed to load native auth_core ({exc}), falling back to Python solver")
         _AUTH_CORE = None
 
     _AUTH_CORE_LOADED = True
@@ -117,27 +134,79 @@ def init_auth_session(
     proxy: Optional[str] = None,
     verify: bool = False,
 ) -> tuple[str, str]:
-    """初始化认证会话，返回 (device_id, user_agent)。"""
+    """初始化认证会话，返回 (device_id, user_agent)。
+
+    1. 优先尝试使用二进制核心 auth_core.init_auth 初始化设备与会话凭证。
+    2. 若二进制核心不可用或未成功获取 auth-session-minimized，
+       无缝回退至纯 Python 原生 NextAuth 握手流程，确保跨平台（Linux Docker/Windows/Mac）
+       均能可靠建立 OpenAI 认证会话，杜绝由于缺乏 Session 导致的 HTTP 409 (invalid_state) 异常。
+    """
     core = _load_auth_core()
     masked_email = email[:2] + "***@" + email.split("@")[-1] if "@" in email else email
     proxies = {"http": proxy, "https": proxy} if proxy else None
+    did: Optional[str] = None
+    ua: Optional[str] = None
 
+    # 1. 优先尝试二进制核心初始化
     if core and hasattr(core, "init_auth"):
         try:
-            did, ua = core.init_auth(
+            core_did, core_ua = core.init_auth(
                 session=session,
                 email=email,
                 masked_email=masked_email,
                 proxies=proxies,
                 verify=verify,
             )
-            if did and ua:
-                return str(did), str(ua)
+            if core_did and core_ua:
+                did, ua = str(core_did), str(core_ua)
         except Exception as e:
-            logger.warning(f"[auth_solver] auth_core.init_auth failed: {e}, using local fallback")
+            logger.warning(f"[auth_solver] auth_core.init_auth failed: {e}, falling back to Python NextAuth solver")
 
-    did = str(uuid.uuid4())
-    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    # 检查是否已成功拿到 auth-session
+    has_session = any("auth-session" in c.name for c in session.cookies.jar)
+    if has_session and did and ua:
+        return did, ua
+
+    # 2. 纯 Python 原生 NextAuth 会话握手回退机制 (跨平台/Docker 容器通用)
+    ua = ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    try:
+        session.headers.update({
+            "User-Agent": ua,
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        session.get("https://chatgpt.com/", proxies=proxies, timeout=15, verify=verify)
+        csrf_resp = session.get("https://chatgpt.com/api/auth/csrf", proxies=proxies, timeout=15, verify=verify)
+        csrf_token = ""
+        if csrf_resp.status_code == 200:
+            try:
+                csrf_token = csrf_resp.json().get("csrfToken") or ""
+            except Exception:
+                pass
+
+        if csrf_token:
+            clean_email = email.strip()
+            signin_url = (
+                f"https://chatgpt.com/api/auth/signin/openai"
+                f"?prompt=login&screen_hint=login_or_signup&login_hint={urllib.parse.quote(clean_email)}"
+            )
+            session.post(
+                signin_url,
+                data={"csrfToken": csrf_token, "callbackUrl": "https://chatgpt.com/"},
+                proxies=proxies,
+                allow_redirects=True,
+                timeout=20,
+                verify=verify,
+            )
+    except Exception as exc:
+        logger.warning(f"[auth_solver] Native Python NextAuth handshake error: {exc}")
+
+    # 优先使用 OpenAI 签发的 oai-did，若无则生成随机指纹
+    cookie_did = session.cookies.get("oai-did")
+    if cookie_did:
+        did = str(cookie_did)
+    elif not did:
+        did = str(uuid.uuid4())
+
     return did, ua
 
 
