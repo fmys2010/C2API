@@ -16,6 +16,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./config.json:/app/config.json
+      - ./services:/app/services
+      - ./api:/app/api
     environment:
       # 纯 SQLite 存储引擎（持久化至 ./data/accounts.db）
       STORAGE_BACKEND: sqlite
