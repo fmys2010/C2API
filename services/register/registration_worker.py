@@ -293,8 +293,28 @@ def register_single_account(
         access_token = ""
         user_obj: dict[str, Any] = {}
 
-        # 优先使用 AuthCore 原生数据通道提取
-        if core and hasattr(core, "image2api_data"):
+        # 优先跟随 continue_url 完成 Web 端会话流转与 Cookie 种植
+        if target_continue_url:
+            try:
+                c_resp = session.get(target_continue_url, timeout=25, allow_redirects=True, verify=False)
+                logger.debug(f"[RegisterWorker] continue_url navigation response: {c_resp.status_code}")
+            except Exception as ce:
+                logger.debug(f"[RegisterWorker] continue_url navigation error: {ce}")
+
+        # 尝试从 /api/auth/session 提取 AccessToken 与 Session 信息
+        try:
+            sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
+            if sess_resp.status_code == 200 and sess_resp.text:
+                sess_data = sess_resp.json()
+                access_token = str(sess_data.get("accessToken") or "").strip()
+                user_obj = sess_data.get("user") or {}
+                if access_token:
+                    logger.debug("[RegisterWorker] AccessToken extracted via Web session endpoint")
+        except Exception as se:
+            logger.debug(f"[RegisterWorker] Web session fallback error: {se}")
+
+        # 若未成功提取，使用 AuthCore 原生数据通道提取 AccessToken
+        if not access_token and core and hasattr(core, "image2api_data"):
             try:
                 res_data = core.image2api_data(session, target_continue_url, proxies)
                 if res_data and isinstance(res_data, str) and len(res_data) > 50:
@@ -302,40 +322,34 @@ def register_single_account(
             except Exception as ae:
                 logger.debug(f"[RegisterWorker] core.image2api_data: {ae}")
 
-        # 确保 session 跟随 continue_url 完成 Web 端会话流转与 Cookie 种植
-        if target_continue_url:
-            try:
-                session.get(target_continue_url, timeout=25, allow_redirects=True, verify=False)
-            except Exception as ce:
-                logger.debug(f"[RegisterWorker] continue_url navigation error: {ce}")
-
-        # 请求 /api/auth/session 提取/核验 AccessToken 与 Session Cookie
-        try:
-            sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
-            if sess_resp.status_code == 200 and sess_resp.text:
-                sess_data = sess_resp.json()
-                if not access_token:
-                    access_token = str(sess_data.get("accessToken") or "").strip()
-                user_obj = sess_data.get("user") or {}
-        except Exception as se:
-            logger.debug(f"[RegisterWorker] Web session fallback error: {se}")
-
         if not access_token:
             err = "未能提取到有效 accessToken"
             log(f"❌ {err}")
             return {"success": False, "email": email_addr, "error": err}
 
-        # 提取 NextAuth 会话 Cookie 用于常驻心跳续期 (方案 C - 免手机号)
-        session_token = (
-            session.cookies.get("__Secure-next-auth.session-token")
-            or session.cookies.get("__Host-next-auth.session-token")
-            or ""
-        )
+        # 提取 NextAuth 会话 Cookie 用于常驻心跳续期 (方案 C - 免手机号，支持标准与分片 Cookie)
+        session_token = ""
+        for key in ("__Secure-next-auth.session-token", "__Host-next-auth.session-token"):
+            v = session.cookies.get(key)
+            if v:
+                session_token = v
+                break
+
         if not session_token:
+            chunks: list[tuple[int, str]] = []
             for cookie in session.cookies.jar:
-                if "next-auth.session-token" in cookie.name:
+                if "next-auth.session-token." in cookie.name:
+                    try:
+                        idx = int(cookie.name.split(".")[-1])
+                        chunks.append((idx, cookie.value))
+                    except (ValueError, IndexError):
+                        pass
+                elif "next-auth.session-token" in cookie.name:
                     session_token = cookie.value
                     break
+            if not session_token and chunks:
+                chunks.sort(key=lambda x: x[0])
+                session_token = "".join(v for _, v in chunks)
 
         # 9. 存入号池数据库 (SQLite accounts.db)
         account_item = {

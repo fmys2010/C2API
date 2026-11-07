@@ -604,10 +604,11 @@ class AccountService:
                     web_res = self.refresh_web_session(active_token)
                     if web_res and web_res.get("access_token"):
                         return str(web_res.get("access_token"))
-                # 方案 B: 若存在密码则尝试重新登录自愈
+                # 方案 B: 若存在密码则尝试重新登录自愈 (仅限非 web_register 账号，避免触发官方手机号风控)
                 email = str(account.get("email") or "").strip()
                 password = str(account.get("password") or "").strip()
-                if email and password and password != "Passwordless_Web":
+                source_type = str(account.get("source_type") or "").strip()
+                if source_type != "web_register" and email and password and password != "Passwordless_Web":
                     t = Thread(
                         target=self._password_re_login_thread,
                         args=(active_token, email, password, event),
@@ -1222,8 +1223,8 @@ class AccountService:
         invalid_count = int((account or {}).get("invalid_count") or 0) + 1
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        # 防误删状态机：首次失败 (invalid_count <= 1) 仅标记异常，留存容灾自愈窗口
-        if invalid_count <= 1 or not config.auto_remove_invalid_accounts:
+        # 防误删状态机：连续失败 <= 2 次仅标记异常，留存容灾自愈窗口，至少第 3 次持续失败才执行物理删除
+        if invalid_count <= 2 or not config.auto_remove_invalid_accounts:
             self.update_account(
                 access_token,
                 {
@@ -1745,6 +1746,9 @@ class AccountService:
                     continue
                 status = str(account.get("status") or "").strip()
                 if status != "异常":
+                    continue
+                source_type = str(account.get("source_type") or "").strip()
+                if source_type == "web_register":
                     continue
                 email = str(account.get("email") or "").strip()
                 password = str(account.get("password") or "").strip()
