@@ -1,7 +1,7 @@
 """OpenAI 官网全新架构注册机核心执行器。
 
-基于真实的 ChatGPT Web OAuth 注册协议，结合 Sentinel + Turnstile VM 算力挑战与
-Gmail IMAP 邮件监听自毁机制，实现全自动化注册并将 Access Token 持久化至号池。
+基于真实的 ChatGPT Web 官方协议与 AuthCore 原生 Turnstile VM 模拟器，
+结合 Gmail IMAP 自动提取与自毁清理，实现全自动化免密注册与 AccessToken 持久化。
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from typing import Any, Callable, Optional
 from curl_cffi import requests
 
 from services.account_service import account_service
-from services.register.auth_solver import generate_sentinel_payload
+from services.register.auth_solver import _load_auth_core, generate_sentinel_payload
 from services.register.mail_provider import BaseMailProvider
 
 logger = logging.getLogger(__name__)
@@ -30,18 +30,13 @@ FIRST_NAMES = [
     "Thomas", "Charles", "Christopher", "Daniel", "Matthew", "Anthony", "Mark",
     "Donald", "Steven", "Paul", "Andrew", "Joshua", "Kenneth", "Kevin", "Brian",
     "George", "Timothy", "Ronald", "Edward", "Jason", "Jeffrey", "Ryan", "Jacob",
-    "Gary", "Nicholas", "Eric", "Jonathan", "Stephen", "Larry", "Justin", "Scott",
     "Emma", "Olivia", "Ava", "Isabella", "Sophia", "Mia", "Charlotte", "Amelia",
-    "Harper", "Evelyn", "Abigail", "Emily", "Ella", "Elizabeth", "Camila", "Luna",
 ]
 
 LAST_NAMES = [
     "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
     "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson",
     "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson",
-    "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker",
-    "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen", "Hill",
-    "Flores", "Green", "Adams", "Nelson", "Baker", "Hall", "Rivera", "Campbell",
 ]
 
 
@@ -53,7 +48,7 @@ def _generate_user_info() -> dict[str, str]:
     return {"name": name, "birthdate": f"{year}-{month:02d}-{day:02d}"}
 
 
-def _trace_headers() -> dict[str, str]:
+def _make_trace_headers() -> dict[str, str]:
     trace_id = str(random.getrandbits(64))
     parent_id = str(random.getrandbits(64))
     return {
@@ -64,24 +59,6 @@ def _trace_headers() -> dict[str, str]:
         "x-datadog-sampling-priority": "1",
         "x-datadog-trace-id": trace_id,
     }
-
-
-def _oai_headers(did: str, ua: str, extra: Optional[dict] = None) -> dict[str, str]:
-    h = {
-        "User-Agent": ua,
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "oai-device-id": did,
-        "oai-language": "en-US",
-        "Origin": "https://auth.openai.com",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-    }
-    h.update(_trace_headers())
-    if extra:
-        h.update(extra)
-    return h
 
 
 def register_single_account(
@@ -110,56 +87,34 @@ def register_single_account(
     masked_email = email_addr[:3] + "***@" + email_addr.split("@")[-1]
     log(f"已申请注册邮箱: {masked_email}")
 
-    # 2. 初始化高仿真 Chrome 客户端
+    # 2. 初始化高仿真 Session 客户端
     session = requests.Session(proxies=proxies, impersonate="chrome")
-    session.headers.update({"Connection": "close"})
     session.timeout = 30
+
+    core = _load_auth_core()
+    did = str(uuid.uuid4())
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     try:
-        # 3. 官方 NextAuth 握手端点初始化
+        # 3. 官方 Auth 会话初始化
         log("初始化 ChatGPT 官方认证会话...")
-        csrf_resp = session.get("https://chatgpt.com/api/auth/csrf", timeout=20, verify=False)
-        if csrf_resp.status_code != 200:
-            err = f"获取 CSRF Token 失败 (HTTP {csrf_resp.status_code})"
-            log(f"❌ {err}")
-            return {"success": False, "email": email_addr, "error": err}
+        if core and hasattr(core, "init_auth"):
+            try:
+                core_did, core_ua = core.init_auth(
+                    session=session,
+                    email=email_addr,
+                    masked_email=masked_email,
+                    proxies=proxies,
+                    verify=False,
+                )
+                if core_did:
+                    did = core_did
+                if core_ua:
+                    ua = core_ua
+            except Exception as ie:
+                logger.warning(f"[RegisterWorker] core.init_auth warning: {ie}")
 
-        csrf_token = csrf_resp.json().get("csrfToken")
-        signin_data = {
-            "callbackUrl": "https://chatgpt.com/",
-            "csrfToken": csrf_token,
-            "json": "true",
-        }
-        # 注意：官网真实参数仅需 screen_hint=signup，严禁带 prompt=create
-        signin_resp = session.post(
-            "https://chatgpt.com/api/auth/signin/openai?screen_hint=signup",
-            data=signin_data,
-            timeout=20,
-            verify=False,
-        )
-        if signin_resp.status_code != 200:
-            err = f"NextAuth 握手失败 (HTTP {signin_resp.status_code})"
-            log(f"❌ {err}")
-            return {"success": False, "email": email_addr, "error": err}
-
-        auth_url = signin_resp.json().get("url", "")
-        if not auth_url:
-            err = "未能从 NextAuth 获取官方授权登录 URL"
-            log(f"❌ {err}")
-            return {"success": False, "email": email_addr, "error": err}
-
-        # 访问授权页面获取 auth.openai.com 会话 Cookie 及 Device ID
-        auth_page_resp = session.get(auth_url, timeout=20, allow_redirects=True, verify=False)
-        did = str(session.cookies.get("oai-did") or uuid.uuid4())
         log(f"设备指纹就绪 (DID: {did[:8]}...{did[-4:]})")
-
-        # 检查是否成功建立有效的 OpenAI 认证会话凭证
-        has_auth_session = any("auth-session" in c.name for c in session.cookies.jar)
-        if not has_auth_session:
-            err = "初始化认证会话失败：未获取到 auth-session Cookie (IP 被阻断)"
-            log(f"❌ {err}")
-            return {"success": False, "email": email_addr, "error": err, "is_403": True}
 
         # 4. 计算包含 Turnstile VM 凭据的 Sentinel Token 并提交邮箱
         log("正在计算 Sentinel + Turnstile 算力挑战 (flow: authorize_continue)...")
@@ -172,17 +127,21 @@ def register_single_account(
             ctx=reg_ctx,
         )
 
-        headers = _oai_headers(did, ua, {
-            "Referer": "https://auth.openai.com/create-account",
-            "Content-Type": "application/json",
+        headers = {
+            "user-agent": ua,
+            "accept": "application/json",
+            "content-type": "application/json",
+            "oai-device-id": did,
+            "origin": "https://auth.openai.com",
+            "referer": "https://auth.openai.com/create-account",
             "openai-sentinel-token": sentinel_payload,
-            "OpenAI-Sentinel-Token": sentinel_payload,
-        })
+        }
+        headers.update(_make_trace_headers())
 
         signup_resp = session.post(
             "https://auth.openai.com/api/accounts/authorize/continue",
             headers=headers,
-            json={"username": {"value": email_addr, "kind": "email"}, "screen_hint": "signup"},
+            json={"username": {"value": email_addr, "kind": "email"}, "screen_hint": "login_or_signup"},
             timeout=25,
             verify=False,
         )
@@ -201,10 +160,10 @@ def register_single_account(
         page_type = str((signup_data.get("page") or {}).get("type") or "")
         cont_url = str(signup_data.get("continue_url") or "")
         log(f"账号提交成功，会话流转至: {page_type or cont_url}")
-        log("✅ 验证码邮件已派发至收件箱")
+        log("✅ 验证码邮件已成功派发至邮箱")
 
         # 5. 轮询提取邮件验证码
-        log("正在监听邮箱接收验证码...")
+        log("正在等待邮件到达并提取验证码...")
         otp_code = mail_provider.get_code(
             email_addr,
             token=email_token,
@@ -218,22 +177,26 @@ def register_single_account(
             log(f"❌ {err}")
             return {"success": False, "email": email_addr, "error": err}
 
-        log(f"收到验证码: {otp_code}，提交核验...")
+        log(f"提取验证码成功: {otp_code}，提交核验...")
 
         # 6. 校验邮件验证码
         sentinel_otp = generate_sentinel_payload(
             did=did,
-            flow="email_otp_validate",
+            flow="authorize_continue",
             proxy=proxy,
             user_agent=ua,
             ctx=reg_ctx,
         )
-        val_headers = _oai_headers(did, ua, {
-            "Referer": "https://auth.openai.com/email-verification",
-            "Content-Type": "application/json",
+        val_headers = {
+            "user-agent": ua,
+            "accept": "application/json",
+            "content-type": "application/json",
+            "oai-device-id": did,
+            "origin": "https://auth.openai.com",
+            "referer": "https://auth.openai.com/email-verification",
             "openai-sentinel-token": sentinel_otp,
-            "OpenAI-Sentinel-Token": sentinel_otp,
-        })
+        }
+        val_headers.update(_make_trace_headers())
 
         val_resp = session.post(
             "https://auth.openai.com/api/accounts/email-otp/validate",
@@ -250,24 +213,30 @@ def register_single_account(
 
         val_data = val_resp.json() if val_resp.text else {}
         target_continue_url = str(val_data.get("continue_url") or "")
+        log("✅ 验证码校验通过")
 
         # 7. 填写个人资料 (About You)
         if "about-you" in target_continue_url or "create-account" in target_continue_url:
             user_info = _generate_user_info()
-            log(f"填写用户信息 (姓名: {user_info['name']}, 生日: {user_info['birthdate']})...")
+            log(f"完善个人信息 (姓名: {user_info['name']}, 生日: {user_info['birthdate']})...")
             sentinel_about = generate_sentinel_payload(
                 did=did,
-                flow="oauth_create_account",
+                flow="create_account",
                 proxy=proxy,
                 user_agent=ua,
                 ctx=reg_ctx,
             )
-            about_headers = _oai_headers(did, ua, {
-                "Referer": "https://auth.openai.com/about-you",
-                "Content-Type": "application/json",
-                "OpenAI-Sentinel-Token": sentinel_about,
+            about_headers = {
+                "user-agent": ua,
+                "accept": "application/json",
+                "content-type": "application/json",
+                "oai-device-id": did,
+                "origin": "https://auth.openai.com",
+                "referer": "https://auth.openai.com/about-you",
                 "openai-sentinel-token": sentinel_about,
-            })
+            }
+            about_headers.update(_make_trace_headers())
+
             about_resp = session.post(
                 "https://auth.openai.com/api/accounts/create_account",
                 headers=about_headers,
@@ -277,22 +246,36 @@ def register_single_account(
             )
             if about_resp.status_code == 200 and about_resp.text:
                 target_continue_url = str(about_resp.json().get("continue_url") or target_continue_url)
+            log("✅ 个人信息提交成功")
 
-        # 8. 跟踪回调授权链提取 ChatGPT Access Token
-        log("核验通过，跟踪授权回调换取 API 访问凭据...")
-        session.get(target_continue_url, timeout=25, allow_redirects=True, verify=False)
-
-        # 提取 Web Session Token
-        sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
+        # 8. 换取 ChatGPT Access Token
+        log("核验全流程通过，正在提取 API 访问凭据 (Access Token)...")
         access_token = ""
         user_obj: dict[str, Any] = {}
-        if sess_resp.status_code == 200:
-            sess_data = sess_resp.json()
-            access_token = str(sess_data.get("accessToken") or "").strip()
-            user_obj = sess_data.get("user") or {}
+
+        # 优先使用 AuthCore 原生数据通道提取
+        if core and hasattr(core, "image2api_data"):
+            try:
+                res_data = core.image2api_data(session, target_continue_url, proxies)
+                if res_data and isinstance(res_data, str) and len(res_data) > 50:
+                    access_token = res_data
+            except Exception as ae:
+                logger.debug(f"[RegisterWorker] core.image2api_data: {ae}")
+
+        # 回退至 Callback 会话提取
+        if not access_token:
+            try:
+                session.get(target_continue_url, timeout=25, allow_redirects=True, verify=False)
+                sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
+                if sess_resp.status_code == 200:
+                    sess_data = sess_resp.json()
+                    access_token = str(sess_data.get("accessToken") or "").strip()
+                    user_obj = sess_data.get("user") or {}
+            except Exception as se:
+                logger.debug(f"[RegisterWorker] Web session fallback error: {se}")
 
         if not access_token:
-            err = "未能从 Web 会话提取有效 accessToken"
+            err = "未能提取到有效 accessToken"
             log(f"❌ {err}")
             return {"success": False, "email": email_addr, "error": err}
 
@@ -310,7 +293,7 @@ def register_single_account(
             "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         res = account_service.add_account_items([account_item])
-        log(f"🎉 注册成功并存入号池！账号: {email_addr} (Token: {access_token[:10]}...{access_token[-6:]})")
+        log(f"🎉 账号注册成功并存入号池！邮箱: {email_addr} (Token: {access_token[:12]}...{access_token[-8:]})")
 
         return {
             "success": True,
