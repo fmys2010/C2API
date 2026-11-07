@@ -86,8 +86,13 @@ def create_router() -> APIRouter:
         return {"status": "success"}
 
     @router.get("/logs/stream")
-    async def stream_logs(request: Request, authorization: str | None = Header(default=None)):
-        require_admin(authorization)
+    async def stream_logs(
+        request: Request,
+        authorization: str | None = Header(default=None),
+        token: Optional[str] = Query(default=None),
+    ):
+        auth_header = authorization or (f"Bearer {token}" if token else None)
+        require_admin(auth_header)
 
         async def event_generator():
             queue: asyncio.Queue = asyncio.Queue(maxsize=100)
