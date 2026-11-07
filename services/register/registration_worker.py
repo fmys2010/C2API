@@ -195,6 +195,9 @@ def register_single_account(
             verify=False,
         )
         if pwd_resp.status_code == 200:
+            cont_send = (pwd_resp.json() if pwd_resp.text else {}).get("continue_url")
+            if cont_send:
+                session.get(cont_send, headers=pwd_headers, timeout=20, verify=False)
             log("✅ 独立密码绑定成功，已触发邮箱验证码派发")
         else:
             log(f"⚠️ 密码提交响应 HTTP {pwd_resp.status_code}: {pwd_resp.text[:100]}，继续验证流程")
