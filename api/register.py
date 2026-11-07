@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from api.support import require_admin
 from services.register import register_service
-from services.register.mail_provider import CloudflareWorkerMailProvider
 
 
 class StartRequest(BaseModel):
@@ -25,25 +24,15 @@ class ConfigUpdateRequest(BaseModel):
     concurrency: Optional[int] = None
     check_interval_seconds: Optional[int] = None
     mail_mode: Optional[str] = None
-    cf_worker_domains: Optional[str] = None
-    cf_worker_webhook_secret: Optional[str] = None
-    cf_worker_ntfy_topic: Optional[str] = None
-    duckmail_api_url: Optional[str] = None
-    duckmail_domain: Optional[str] = None
+    domains: Optional[str] = None
+    gmail_address: Optional[str] = None
+    gmail_app_password: Optional[str] = None
     imap_host: Optional[str] = None
     imap_port: Optional[int] = None
     imap_username: Optional[str] = None
     imap_password: Optional[str] = None
     imap_domains: Optional[str] = None
     proxies_text: Optional[str] = None
-
-
-class CFWorkerWebhookPayload(BaseModel):
-    email: str
-    code: str
-    subject: Optional[str] = None
-    from_: Optional[str] = None
-    timestamp: Optional[int] = None
 
 
 class TestProxyRequest(BaseModel):
@@ -122,26 +111,7 @@ def create_router() -> APIRouter:
             },
         )
 
-    @router.post("/webhook/cf-worker")
-    async def cf_worker_webhook(
-        payload: CFWorkerWebhookPayload,
-        x_webhook_secret: Optional[str] = Header(None, alias="X-Webhook-Secret"),
-    ):
-        """Cloudflare Email Worker 极速直推 Webhook 接收端点。
 
-        0 存储、0 轮询，单次 HTTP POST 推送瞬间 resolve 唤醒等待中的注册任务。
-        """
-        cfg = register_service.get_config()
-        expected_secret = (cfg.get("cf_worker_webhook_secret") or "").strip()
-        if expected_secret:
-            if not x_webhook_secret or x_webhook_secret.strip() != expected_secret:
-                raise HTTPException(status_code=403, detail="Invalid X-Webhook-Secret")
-
-        resolved = CloudflareWorkerMailProvider.resolve_code(payload.email, payload.code)
-        register_service.log(
-            f"⚡ [CF-Worker Webhook] 收到邮件验证码: {payload.email} -> {payload.code} (命中等待: {resolved})"
-        )
-        return {"status": "success", "resolved": resolved}
 
     @router.post("/test_proxy")
     async def test_proxy(req: TestProxyRequest, authorization: str | None = Header(default=None)):

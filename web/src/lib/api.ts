@@ -933,12 +933,10 @@ export type RegisterConfig = {
   target_count: number;
   concurrency: number;
   check_interval_seconds: number;
-  mail_mode: "cf_worker" | "duckmail" | "imap";
-  cf_worker_domains?: string;
-  cf_worker_webhook_secret?: string;
-  cf_worker_ntfy_topic?: string;
-  duckmail_api_url: string;
-  duckmail_domain: string;
+  mail_mode: "gmail" | "imap";
+  domains: string;
+  gmail_address?: string;
+  gmail_app_password?: string;
   imap_host: string;
   imap_port: number;
   imap_username: string;

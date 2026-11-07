@@ -26,16 +26,14 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = DATA_DIR / "register_config.json"
 
 DEFAULT_CONFIG = {
-    "mode": "smart",  # "smart" | "manual"
+    "mode": "manual",  # "smart" | "manual"
     "target_count": 20,
-    "concurrency": 2,
+    "concurrency": 1,
     "check_interval_seconds": 60,
-    "mail_mode": "cf_worker",  # "cf_worker" | "duckmail" | "imap"
-    "cf_worker_domains": "",
-    "cf_worker_webhook_secret": "",
-    "cf_worker_ntfy_topic": "",
-    "duckmail_api_url": "https://api.duckmail.com",
-    "duckmail_domain": "duckmail.com",
+    "mail_mode": "gmail",  # "gmail" | "imap"
+    "domains": "nomorera2.de,mx1.nomorera2.de",
+    "gmail_address": "",
+    "gmail_app_password": "",
     "imap_host": "",
     "imap_port": 993,
     "imap_username": "",
@@ -127,7 +125,7 @@ class RegisterService:
 
     def get_logs(self, limit: int = 300) -> list[dict]:
         with self._lock:
-            items = list(self._logs)
+            items = sorted(self._logs, key=lambda x: x.get("timestamp") or 0)
             return items[-limit:] if len(items) > limit else items
 
     def clear_logs(self) -> None:
