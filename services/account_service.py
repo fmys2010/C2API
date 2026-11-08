@@ -421,6 +421,8 @@ class AccountService:
             next_item["last_token_refresh_at"] = now
             next_item["last_token_refresh_error"] = None
             next_item["last_token_refresh_error_at"] = None
+            if next_item.get("status") == "异常":
+                next_item["status"] = "正常"
             next_item["invalid_count"] = 0
             next_item["last_invalid_at"] = None
             next_item["last_refresh_error"] = None
