@@ -97,10 +97,21 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
                     expiring_tokens = account_service.list_expiring_access_tokens()
                     invalid_tokens = account_service.list_invalid_tokens()
                     keepalive_tokens = account_service.list_refresh_token_keepalive_tokens()
-                    tokens = list(dict.fromkeys([*limited_tokens, *normal_tokens, *expiring_tokens, *invalid_tokens]))
+                    # 巡检时，只要账号进入异常状态，自动根据邮箱接收验证码重新登录自愈（重登失败2次后物理删除）
+                    if invalid_tokens:
+                        for token in invalid_tokens:
+                            account = account_service.get_account(token)
+                            if account:
+                                email = str(account.get("email") or "").strip()
+                                if email:
+                                    account_service.enqueue_relogin(token, email, account.get("proxy"))
+                                else:
+                                    account_service.delete_accounts([token])
+
+                    tokens = list(dict.fromkeys([*limited_tokens, *normal_tokens, *expiring_tokens]))
                     expiring_token_set = set(expiring_tokens)
                     keepalive_tokens = [token for token in keepalive_tokens if token not in expiring_token_set]
-                    if tokens:
+                    if tokens or invalid_tokens:
                         print(
                             "[account-watcher] patrolling "
                             f"{len(limited_tokens)} limited accounts, "
@@ -108,7 +119,8 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
                             f"{len(invalid_tokens)} invalid accounts, "
                             f"{len(expiring_tokens)} expiring access tokens"
                         )
-                        account_service.refresh_accounts(tokens)
+                        if tokens:
+                            account_service.refresh_accounts(tokens)
                     if keepalive_tokens:
                         print(f"[account-watcher] keepalive {len(keepalive_tokens)} refresh tokens")
                         result = account_service.keepalive_refresh_tokens(keepalive_tokens)

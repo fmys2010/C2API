@@ -455,6 +455,13 @@ class AccountService:
 
     def _relogin_worker_loop(self) -> None:
         """后台异步处理异常账号的重登任务。"""
+        # 启动后稍作等待，扫描数据库中的已有异常账号入队自愈
+        time.sleep(5)
+        try:
+            self.enqueue_existing_invalid_accounts()
+        except Exception as e:
+            logger.error(f"[ReloginWorker] Initial scan error: {e}")
+
         while True:
             try:
                 item = self._relogin_queue.get()
@@ -469,6 +476,24 @@ class AccountService:
                     self._relogin_queue.task_done()
                 except Exception:
                     pass
+
+    def enqueue_existing_invalid_accounts(self) -> int:
+        """将当前数据库中现存的所有异常账号加入自愈队列。"""
+        invalid_tokens = self.list_invalid_tokens()
+        enqueued = 0
+        for token in invalid_tokens:
+            account = self.get_account(token)
+            if not account:
+                continue
+            email = str(account.get("email") or "").strip()
+            if email:
+                if self.enqueue_relogin(token, email, account.get("proxy")):
+                    enqueued += 1
+            else:
+                self.delete_accounts([token])
+        if enqueued:
+            logger.info(f"📥 [ReloginWorker] 启动发现 {enqueued} 个异常账号，已加入自愈队列")
+        return enqueued
 
     def enqueue_relogin(self, access_token: str, email: str, proxy: Any = None) -> bool:
         """将异常账号加入后台邮箱重登自愈队列（防并发重复入队）。"""
@@ -1094,23 +1119,21 @@ class AccountService:
             quiet=quiet,
         )
 
-        # 触发邮箱重登自愈：只要开启自愈且有邮箱，进入异步队列重试
-        if email and getattr(config, "auto_relogin_after_refresh", True):
+        # 触发邮箱重登自愈：只要有邮箱，进入异步队列重登自愈（2次重试失败后物理删除）
+        if email:
             self.enqueue_relogin(access_token, email, account.get("proxy"))
             return False
 
-        # 如果没有邮箱（无法自愈），或者关闭了自愈且开启了自动移除，则物理删除
-        if not email or config.auto_remove_invalid_accounts:
-            removed = bool(self.delete_accounts([access_token])["removed"])
-            if removed:
-                self._notify_pool_health_change()
-                log_service.add(
-                    LOG_TYPE_ACCOUNT,
-                    "自动移除异常账号",
-                    {"source": event, "token": anonymize_token(access_token), "reason": "no_email_or_auto_remove"},
-                )
-            return removed
-        return False
+        # 如果没有邮箱（无法自愈），直接物理删除
+        removed = bool(self.delete_accounts([access_token])["removed"])
+        if removed:
+            self._notify_pool_health_change()
+            log_service.add(
+                LOG_TYPE_ACCOUNT,
+                "自动移除异常账号",
+                {"source": event, "token": anonymize_token(access_token), "reason": "no_email_cannot_relogin"},
+            )
+        return removed
 
     def get_account(self, access_token: str) -> dict | None:
         if not access_token:
@@ -1603,21 +1626,21 @@ class AccountService:
         else:
             executor.shutdown(wait=True, cancel_futures=True)
 
-        # 自动将异常账号加入邮箱验证码重登自愈队列（仅当配置开启时）
+        # 自动将异常账号加入邮箱验证码重登自愈队列（无邮箱则物理清理）
         relogined = 0
-        if getattr(config, "auto_relogin_after_refresh", True):
-            for token in access_tokens:
-                account = self.get_account(token)
-                if not account:
-                    continue
-                status = str(account.get("status") or "").strip()
-                if status != "异常":
-                    continue
-                email = str(account.get("email") or "").strip()
-                if not email:
-                    continue
-                if self.enqueue_relogin(token, email, account.get("proxy")):
-                    relogined += 1
+        for token in access_tokens:
+            account = self.get_account(token)
+            if not account:
+                continue
+            status = str(account.get("status") or "").strip()
+            if status != "异常":
+                continue
+            email = str(account.get("email") or "").strip()
+            if not email:
+                self.delete_accounts([token])
+                continue
+            if self.enqueue_relogin(token, email, account.get("proxy")):
+                relogined += 1
 
         result = {
             "refreshed": refreshed,

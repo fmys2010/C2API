@@ -442,7 +442,7 @@ class ConfigStore:
 
     @property
     def auto_remove_invalid_accounts(self) -> bool:
-        value = self.data.get("auto_remove_invalid_accounts", False)
+        value = self.data.get("auto_remove_invalid_accounts", True)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
@@ -456,7 +456,7 @@ class ConfigStore:
 
     @property
     def auto_relogin_after_refresh(self) -> bool:
-        value = self.data.get("auto_relogin_after_refresh", False)
+        value = self.data.get("auto_relogin_after_refresh", True)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
