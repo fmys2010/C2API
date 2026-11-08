@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import queue
+import random
 import secrets
 import time
 import uuid
@@ -59,6 +61,10 @@ class AccountService:
         self._image_inflight: dict[str, int] = {}
         self._token_aliases: dict[str, str] = {}
         self._cumulative_total = self._load_cumulative_total()
+        self._relogin_queue = queue.Queue()
+        self._relogin_in_flight: set[str] = set()
+        self._relogin_lock = Lock()
+        self._start_relogin_worker()
 
     def _get_cumulative_file(self) -> Path:
         from services.config import DATA_DIR
@@ -442,69 +448,115 @@ class AccountService:
         )
         return new_token
 
-    def refresh_web_session(self, access_token: str) -> dict[str, Any] | None:
-        """方案 C: 利用 NextAuth Session Cookie 刷新 Web 会话与 AccessToken"""
-        account = self.get_account(access_token)
-        if not account:
-            return None
-        session_token = str(account.get("session_token") or "").strip()
-        if not session_token:
-            return None
+    def _start_relogin_worker(self) -> None:
+        """启动后台异步邮箱验证码重新登录自愈工作线程。"""
+        t = Thread(target=self._relogin_worker_loop, name="EmailOtpReloginWorker", daemon=True)
+        t.start()
 
-        device_id = str(account.get("device_id") or uuid.uuid4())
-        ua = self._OAUTH_USER_AGENT
+    def _relogin_worker_loop(self) -> None:
+        """后台异步处理异常账号的重登任务。"""
+        while True:
+            try:
+                item = self._relogin_queue.get()
+                if item is None:
+                    break
+                access_token, email, proxy = item
+                self._execute_relogin_with_retry(access_token, email, proxy)
+            except Exception as e:
+                logger.error(f"[ReloginWorker] Loop error: {e}", exc_info=True)
+            finally:
+                try:
+                    self._relogin_queue.task_done()
+                except Exception:
+                    pass
 
-        session_kwargs = {"impersonate": "chrome120", "verify": False, "timeout": 20}
-        proxy = account.get("proxy") or config.get_proxy_settings()
-        if proxy:
-            session_kwargs["proxy"] = proxy
+    def enqueue_relogin(self, access_token: str, email: str, proxy: Any = None) -> bool:
+        """将异常账号加入后台邮箱重登自愈队列（防并发重复入队）。"""
+        if not email:
+            return False
+        with self._relogin_lock:
+            if email in self._relogin_in_flight or access_token in self._relogin_in_flight:
+                logger.debug(f"[Relogin] 账号 {email} 已在重登队列或正在处理中，跳过重复入队")
+                return False
+            self._relogin_in_flight.add(email)
+            self._relogin_in_flight.add(access_token)
+            self._relogin_queue.put((access_token, email, proxy))
+            logger.info(f"📥 [Relogin] 异常账号 {email} 已加入后台邮箱验证码重登自愈队列")
+            return True
 
+    def _execute_relogin_with_retry(self, access_token: str, email: str, proxy: Any = None) -> None:
+        """执行重试逻辑：尝试第 1 次，失败立即重试第 2 次；连续 2 次失败则物理删除。"""
         try:
-            from curl_cffi import requests
-            s = requests.Session(**session_kwargs)
-            s.cookies.set("__Secure-next-auth.session-token", session_token, domain=".chatgpt.com")
-            s.cookies.set("oai-did", device_id, domain=".chatgpt.com")
+            logger.info(f"🔄 [Relogin] 开始为异常账号 {email} 执行邮箱验证码自愈 (第 1 次尝试)...")
+            res = self.login_with_email_otp(email, proxy)
+            if not res.get("ok"):
+                logger.warning(f"⚠️ [Relogin] 账号 {email} 第 1 次重登失败: {res.get('error')}，立即执行第 2 次重试...")
+                time.sleep(2)
+                res = self.login_with_email_otp(email, proxy)
 
-            headers = {
-                "User-Agent": ua,
-                "Accept": "application/json",
-                "oai-device-id": device_id,
-                "Referer": "https://chatgpt.com/",
-                "Origin": "https://chatgpt.com",
-            }
-
-            resp = s.get("https://chatgpt.com/api/auth/session", headers=headers)
-            if resp.status_code == 200:
-                data = resp.json() if resp.text else {}
-                new_token = str(data.get("accessToken") or "").strip()
-                if new_token and new_token != access_token:
-                    rotated_session = s.cookies.get("__Secure-next-auth.session-token") or session_token
-                    token_data = {
-                        "access_token": new_token,
-                        "session_token": rotated_session,
-                    }
-                    new_token = self._apply_refreshed_tokens(access_token, token_data, "refresh_web_session")
-                    self.update_account(new_token, {"status": "正常", "invalid_count": 0}, quiet=True)
-                    log_service.add(
-                        LOG_TYPE_ACCOUNT,
-                        "Web会话刷新AccessToken成功",
-                        {
-                            "email": account.get("email"),
-                            "old_token": anonymize_token(access_token),
-                            "new_token": anonymize_token(new_token),
-                        },
-                    )
-                    return self.get_account(new_token)
-                elif new_token == access_token:
-                    logger.debug(f"Web session returned unchanged token for {account.get('email')}")
-            elif resp.status_code in (401, 403):
-                logger.info(f"Web session expired for {account.get('email')} (HTTP {resp.status_code})")
+            if res.get("ok"):
+                new_token = str(res.get("access_token") or "").strip()
+                new_session = str(res.get("session_token") or "").strip()
+                token_data = {
+                    "access_token": new_token,
+                    "session_token": new_session,
+                }
+                self._apply_refreshed_tokens(access_token, token_data, "email_otp_relogin")
+                self.update_account(
+                    new_token,
+                    {
+                        "status": "正常",
+                        "invalid_count": 0,
+                        "last_invalid_at": None,
+                        "quota": 25,
+                        "device_id": res.get("device_id"),
+                        "oai-device-id": res.get("device_id"),
+                        "user-agent": res.get("user_agent"),
+                        "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    },
+                    quiet=True,
+                )
+                try:
+                    self.fetch_remote_info(new_token, "relogin_sync")
+                except Exception:
+                    pass
+                self._notify_pool_health_change()
+                log_service.add(
+                    LOG_TYPE_ACCOUNT,
+                    "邮箱验证码重登自愈成功",
+                    {
+                        "email": email,
+                        "old_token": anonymize_token(access_token),
+                        "new_token": anonymize_token(new_token),
+                        "status": "正常",
+                    },
+                )
+                logger.info(f"🎉 [Relogin] 账号 {email} 邮箱验证码重登自愈成功！新 Token 已生效，状态恢复为 正常")
+            else:
+                err_msg = res.get("error")
+                logger.warning(f"❌ [Relogin] 账号 {email} 连续 2 次重登失败 ({err_msg})，执行物理删除！")
+                self.delete_accounts([access_token])
+                self._notify_pool_health_change()
+                log_service.add(
+                    LOG_TYPE_ACCOUNT,
+                    "自动删除重登失败账号",
+                    {
+                        "email": email,
+                        "token": anonymize_token(access_token),
+                        "reason": f"relogin_failed_twice: {err_msg}",
+                    },
+                )
         except Exception as exc:
-            logger.warning(f"Web session refresh error for {account.get('email')}: {exc}")
-        return None
+            logger.error(f"[Relogin] 账号 {email} 重登自愈处理异常: {exc}", exc_info=True)
+            self.delete_accounts([access_token])
+            self._notify_pool_health_change()
+        finally:
+            with self._relogin_lock:
+                self._relogin_in_flight.discard(email)
+                self._relogin_in_flight.discard(access_token)
 
     def ping_account_heartbeat(self, access_token: str) -> bool:
-        """轻量心跳保活（防 OpenAI 3~5 分钟空闲超时），通过 OpenAIBackendAPI 访问 /backend-api/me"""
+        """轻量心跳探测，若发现 401 吊销则自动触发邮箱验证码重登自愈。"""
         account = self.get_account(access_token)
         if not account:
             return False
@@ -521,61 +573,19 @@ class AccountService:
             finally:
                 backend.close()
         except InvalidAccessTokenError:
-            # 收到 401 (token_revoked)，启动容灾自愈
-            return self.recover_account_disaster(token)
+            self.remove_invalid_token(token, "heartbeat_401")
         except Exception as e:
             logger.debug(f"Heartbeat ping error for {account.get('email')}: {e}")
         return False
 
     def recover_account_disaster(self, access_token: str) -> bool:
-        """C+B 容灾自愈链：当 AccessToken 异常或被吊销时依次尝试 C (Session) 和 B (Password) 恢复。"""
+        """容灾自愈入口：将失效账号投递至后台邮箱验证码重登自愈队列。"""
         account = self.get_account(access_token)
         if not account:
             return False
-
         email = str(account.get("email") or "").strip()
-        source_type = str(account.get("source_type") or "").strip()
-
-        # 1. 尝试方案 C: Web Session 续期
-        if account.get("session_token"):
-            res_c = self.refresh_web_session(access_token)
-            if res_c and str(res_c.get("access_token") or "").strip() != access_token:
-                logger.info(f"账号 {email} 通过方案 C (Web Session) 自愈复活成功")
-                return True
-
-        # 2. 尝试方案 B: 密码重新登录 (严禁用于 web_register 账号，避免触发手机号风控)
-        pwd = str(account.get("password") or "").strip()
-        if source_type != "web_register" and email and pwd and pwd != "Passwordless_Web":
-            try:
-                res_b = self._login_with_password(email, pwd)
-                if res_b.get("ok"):
-                    new_access_token = str(res_b.get("access_token") or "")
-                    token_data = {
-                        "access_token": new_access_token,
-                        "refresh_token": str(res_b.get("refresh_token") or ""),
-                        "id_token": str(res_b.get("id_token") or ""),
-                    }
-                    self._apply_refreshed_tokens(access_token, token_data, "disaster_recovery_password")
-                    self.update_account(new_access_token, {
-                        "source_type": res_b.get("source_type", "password"),
-                        "status": "正常",
-                        "invalid_count": 0,
-                        "last_invalid_at": None,
-                    }, quiet=True)
-                    log_service.add(
-                        LOG_TYPE_ACCOUNT,
-                        "密码重登自愈成功",
-                        {"email": email, "token": anonymize_token(new_access_token)},
-                    )
-                    logger.info(f"账号 {email} 通过方案 B (密码重新登录) 自愈复活成功！")
-                    return True
-                else:
-                    logger.warning(f"账号 {email} 方案 B 密码登录失败: {res_b.get('error')}")
-            except Exception as exc:
-                logger.warning(f"账号 {email} 方案 B 密码登录异常: {exc}")
-
-        # 3. 方案 C 与 B 均失败 -> 进入安全状态机记录
-        self.remove_invalid_token(access_token, "c_and_b_disaster_failed")
+        if email:
+            return self.enqueue_relogin(access_token, email, account.get("proxy"))
         return False
 
     def refresh_access_token(self, access_token: str, *, force: bool = False, event: str = "refresh_access_token") -> str:
@@ -590,23 +600,10 @@ class AccountService:
                 return active_token
             refresh_token = str(account.get("refresh_token") or "").strip()
             if not refresh_token:
-                # 方案 C: 尝试通过 Web Session Cookie 刷新 AccessToken
-                session_token = str(account.get("session_token") or "").strip()
-                if session_token:
-                    web_res = self.refresh_web_session(active_token)
-                    if web_res and web_res.get("access_token"):
-                        return str(web_res.get("access_token"))
-                # 方案 B: 若存在密码则尝试重新登录自愈 (仅限非 web_register 账号，避免触发官方手机号风控)
+                # 无 refresh_token 账号，若开启自愈则触发邮箱验证码重登
                 email = str(account.get("email") or "").strip()
-                password = str(account.get("password") or "").strip()
-                source_type = str(account.get("source_type") or "").strip()
-                if source_type != "web_register" and email and password and password != "Passwordless_Web":
-                    t = Thread(
-                        target=self._password_re_login_thread,
-                        args=(active_token, email, password, event),
-                        daemon=True,
-                    )
-                    t.start()
+                if email and getattr(config, "auto_relogin_after_refresh", True):
+                    self.enqueue_relogin(active_token, email, account.get("proxy"))
                 return active_token
             if not force and self._recent_token_refresh_error(account):
                 return active_token
@@ -615,384 +612,251 @@ class AccountService:
             except Exception as exc:
                 error_str = str(exc or "")
                 self._record_token_refresh_error(active_token, event, error_str)
-                # 如果是 app_session_terminated 错误，尝试密码重新登录
+                # 如果是 app_session_terminated 错误，尝试邮箱重登自愈
                 if "app_session_terminated" in error_str.lower():
-                    # 获取账号信息（email, password）
                     email = str(account.get("email") or "").strip()
-                    password = str(account.get("password") or "").strip()
-                    if email and password:
-                        # 创建新线程执行密码重新登录
-                        t = Thread(
-                            target=self._password_re_login_thread,
-                            args=(active_token, email, password, event),
-                            daemon=True,
-                        )
-                        t.start()
+                    if email and getattr(config, "auto_relogin_after_refresh", True):
+                        self.enqueue_relogin(active_token, email, account.get("proxy"))
                 return active_token
             return self._apply_refreshed_tokens(active_token, token_data, event)
 
-    def _password_re_login_thread(self, access_token: str, email: str, password: str, event: str, progress_id: str | None = None) -> None:
-        """密码重新登录线程入口"""
-        try:
-            result = self._login_with_password(email, password)
-            if result.get("ok"):
-                # 登录成功，更新账号
-                new_access_token = result.get("access_token", "")
-                new_refresh_token = result.get("refresh_token", "")
-                new_id_token = result.get("id_token", "")
-                new_expires_at = result.get("expires_at")
+    def login_with_email_otp(self, email_addr: str, proxy: Any = None) -> dict[str, Any]:
+        """通过 OpenAI 官方 ChatGPT Web 免密邮箱验证码协议重新登录，换取全新 AccessToken。"""
+        from curl_cffi import requests
+        from services.register.auth_solver import _load_auth_core, generate_sentinel_payload
+        from services.register.mail_provider import create_mail_provider
+        from services.register.register_service import register_service
 
-                # 构建 token_data 供 _apply_refreshed_tokens 使用
-                token_data = {
-                    "access_token": new_access_token,
-                    "refresh_token": new_refresh_token,
-                    "id_token": new_id_token,
+        reg_cfg = register_service.get_config()
+        mail_provider = create_mail_provider(reg_cfg, proxy=proxy)
+
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        session = requests.Session(proxies=proxies, impersonate="chrome")
+        session.timeout = 30
+
+        core = _load_auth_core()
+        did = str(uuid.uuid4())
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        masked_email = email_addr[:3] + "***@" + email_addr.split("@")[-1] if "@" in email_addr else email_addr
+
+        try:
+            if core and hasattr(core, "init_auth"):
+                try:
+                    core_did, core_ua = core.init_auth(
+                        session=session,
+                        email=email_addr,
+                        masked_email=masked_email,
+                        proxies=proxies,
+                        verify=False,
+                    )
+                    if core_did:
+                        did = core_did
+                    if core_ua:
+                        ua = core_ua
+                except Exception as ie:
+                    logger.debug(f"[EmailOTP-Relogin] core.init_auth warning: {ie}")
+
+            reg_ctx: dict[str, Any] = {}
+            sentinel_payload = generate_sentinel_payload(
+                did=did,
+                flow="authorize_continue",
+                proxy=proxy,
+                user_agent=ua,
+                ctx=reg_ctx,
+            )
+
+            trace_headers = {
+                "traceparent": f"00-{uuid.uuid4().hex}-{format(random.getrandbits(64), '016x')}-01",
+                "tracestate": "dd=s:1;o:rum",
+                "x-datadog-origin": "rum",
+                "x-datadog-parent-id": str(random.getrandbits(64)),
+                "x-datadog-sampling-priority": "1",
+                "x-datadog-trace-id": str(random.getrandbits(64)),
+            }
+            headers = {
+                "user-agent": ua,
+                "accept": "application/json",
+                "content-type": "application/json",
+                "oai-device-id": did,
+                "origin": "https://auth.openai.com",
+                "referer": "https://auth.openai.com/create-account",
+                "openai-sentinel-token": sentinel_payload,
+            }
+            headers.update(trace_headers)
+
+            signup_resp = session.post(
+                "https://auth.openai.com/api/accounts/authorize/continue",
+                headers=headers,
+                json={"username": {"value": email_addr, "kind": "email"}, "screen_hint": "login_or_signup"},
+                timeout=25,
+                verify=False,
+            )
+
+            if signup_resp.status_code != 200:
+                return {
+                    "ok": False,
+                    "error": f"authorize_continue_failed_{signup_resp.status_code}",
+                    "detail": signup_resp.text[:200],
                 }
 
-                # 使用 _apply_refreshed_tokens 更新账号（处理 token 别名）
-                new_token = self._apply_refreshed_tokens(access_token, token_data, f"{event}:password_relogin")
+            # 轮询邮箱获取验证码（提取完成后驱动会自动删除邮件并移入废纸篓）
+            otp_code = mail_provider.get_code(
+                email_addr,
+                token=email_addr,
+                timeout=120,
+                poll_interval=4,
+                log_fn=lambda m: logger.info(f"[EmailOTP-Relogin] {m}"),
+            )
+            if not otp_code:
+                return {"ok": False, "error": "otp_timeout"}
 
-                # 额外更新 source_type 和 status（静默，避免重复日志）
-                self.update_account(new_token, {
-                    "source_type": result.get("source_type", "password"),
-                    "status": "正常",
-                }, quiet=True)
+            # 校验验证码
+            sentinel_otp = generate_sentinel_payload(
+                did=did,
+                flow="authorize_continue",
+                proxy=proxy,
+                user_agent=ua,
+                ctx=reg_ctx,
+            )
+            val_headers = {
+                "user-agent": ua,
+                "accept": "application/json",
+                "content-type": "application/json",
+                "oai-device-id": did,
+                "origin": "https://auth.openai.com",
+                "referer": "https://auth.openai.com/email-verification",
+                "openai-sentinel-token": sentinel_otp,
+            }
+            val_headers.update(trace_headers)
 
-                log_service.add(
-                    LOG_TYPE_ACCOUNT,
-                    "更新账号",
+            val_resp = session.post(
+                "https://auth.openai.com/api/accounts/email-otp/validate",
+                headers=val_headers,
+                json={"code": otp_code},
+                timeout=20,
+                verify=False,
+            )
+
+            if val_resp.status_code != 200:
+                return {
+                    "ok": False,
+                    "error": f"otp_validate_failed_{val_resp.status_code}",
+                    "detail": val_resp.text[:200],
+                }
+
+            val_data = val_resp.json() if val_resp.text else {}
+            target_continue_url = str(val_data.get("continue_url") or "")
+
+            if target_continue_url:
+                try:
+                    session.get(target_continue_url, timeout=25, allow_redirects=True, verify=False)
+                except Exception as ce:
+                    logger.debug(f"[EmailOTP-Relogin] continue_url error: {ce}")
+
+            # 提取 AccessToken
+            access_token = ""
+            try:
+                sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
+                if sess_resp.status_code == 200 and sess_resp.text:
+                    sess_data = sess_resp.json()
+                    access_token = str(sess_data.get("accessToken") or "").strip()
+            except Exception as se:
+                logger.debug(f"[EmailOTP-Relogin] session endpoint error: {se}")
+
+            if not access_token and core and hasattr(core, "image2api_data"):
+                try:
+                    res_data = core.image2api_data(session, target_continue_url, proxies)
+                    if res_data and isinstance(res_data, str) and len(res_data) > 50:
+                        access_token = res_data
+                except Exception:
+                    pass
+
+            if not access_token:
+                return {"ok": False, "error": "extract_access_token_failed"}
+
+            session_token = ""
+            for key in ("__Secure-next-auth.session-token", "__Host-next-auth.session-token"):
+                v = session.cookies.get(key)
+                if v:
+                    session_token = v
+                    break
+            if not session_token:
+                chunks: list[tuple[int, str]] = []
+                for cookie in session.cookies.jar:
+                    if "next-auth.session-token." in cookie.name:
+                        try:
+                            idx = int(cookie.name.split(".")[-1])
+                            chunks.append((idx, cookie.value))
+                        except (ValueError, IndexError):
+                            pass
+                    elif "next-auth.session-token" in cookie.name:
+                        session_token = cookie.value
+                        break
+                if not session_token and chunks:
+                    chunks.sort(key=lambda x: x[0])
+                    session_token = "".join(v for _, v in chunks)
+
+            return {
+                "ok": True,
+                "access_token": access_token,
+                "session_token": session_token,
+                "device_id": did,
+                "user_agent": ua,
+            }
+        except Exception as exc:
+            logger.error(f"[EmailOTP-Relogin] Exception: {exc}", exc_info=True)
+            return {"ok": False, "error": f"exception: {exc}"}
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+    def _manual_email_relogin_thread(
+        self, access_token: str, email: str, proxy: Any, event: str, progress_id: Optional[str] = None
+    ) -> None:
+        """手动重新登录线程入口（通过邮箱验证码重登）"""
+        try:
+            res = self.login_with_email_otp(email, proxy)
+            if not res.get("ok"):
+                time.sleep(2)
+                res = self.login_with_email_otp(email, proxy)
+
+            if res.get("ok"):
+                new_token = str(res.get("access_token") or "").strip()
+                new_session = str(res.get("session_token") or "").strip()
+                token_data = {
+                    "access_token": new_token,
+                    "session_token": new_session,
+                }
+                self._apply_refreshed_tokens(access_token, token_data, f"{event}:email_relogin")
+                self.update_account(
+                    new_token,
                     {
-                        "source": event,
-                        "old_token": anonymize_token(access_token),
-                        "new_token": anonymize_token(new_access_token),
-                        "email": email,
-                        "status": "成功",
+                        "status": "正常",
+                        "invalid_count": 0,
+                        "last_invalid_at": None,
+                        "quota": 25,
+                        "device_id": res.get("device_id"),
+                        "oai-device-id": res.get("device_id"),
+                        "user-agent": res.get("user_agent"),
+                        "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     },
+                    quiet=True,
                 )
+                try:
+                    self.fetch_remote_info(new_token, "relogin_sync")
+                except Exception:
+                    pass
+                self._notify_pool_health_change()
                 if progress_id:
                     self.update_relogin_progress(progress_id, access_token, "成功")
             else:
-                # 登录失败
-                error_type = result.get("error", "")
-                if error_type == "password_verify_failed_403" and isinstance(result.get("detail"), dict):
-                    log_service.add(
-                        LOG_TYPE_ACCOUNT,
-                        "更新账号",
-                        {
-                            "source": event,
-                            "token": anonymize_token(access_token),
-                            "email": email,
-                            "status": "失败",
-                            "error": error_type,
-                            "detail": result.get("detail", {}),
-                        },
-                    )
-                    detail_error = result["detail"].get("error", {})
-                    if isinstance(detail_error, dict) and detail_error.get("code") == "account_deactivated":
-                        # 账号已删除/停用 → 标记为禁用
-                        self.update_account(access_token, {"status": "禁用", "quota": 0}, quiet=True)
-                        account = self.get_account(access_token) or {}
-                        log_service.add(
-                            LOG_TYPE_ACCOUNT,
-                            "账号已停用-标记禁用",
-                            {
-                                "source": event,
-                                "token": anonymize_token(access_token),
-                                "email": email,
-                                "detail": result.get("detail", {}),
-                            },
-                        )
-                        if progress_id:
-                            self.update_relogin_progress(progress_id, access_token, "禁用")
-                    else:
-                        # 永久故障：将账号标记为异常（或自动移除）
-                        self.remove_invalid_token(access_token, f"{event}:password_relogin_failed", quiet=True)
-                        if progress_id:
-                            self.update_relogin_progress(progress_id, access_token, "异常", error_type)
-                else:
-                    log_service.add(
-                        LOG_TYPE_ACCOUNT,
-                        "更新账号",
-                        {
-                            "source": event,
-                            "token": anonymize_token(access_token),
-                            "email": email,
-                            "status": "失败",
-                            "error": error_type,
-                            "detail": result.get("detail", {}),
-                        },
-                    )
-                    # 永久故障：将账号标记为异常（或自动移除）
-                    self.remove_invalid_token(access_token, f"{event}:password_relogin_failed", quiet=True)
-                    if progress_id:
-                        self.update_relogin_progress(progress_id, access_token, "异常", error_type)
+                if progress_id:
+                    self.update_relogin_progress(progress_id, access_token, "失败", res.get("error"))
         except Exception as exc:
-            log_service.add(
-                LOG_TYPE_ACCOUNT,
-                "更新账号",
-                {
-                    "source": event,
-                    "token": anonymize_token(access_token),
-                    "email": email,
-                    "status": "异常",
-                    "error": str(exc),
-                },
-            )
-            # 将账号标记为异常（或自动移除）
-            self.remove_invalid_token(access_token, f"{event}:password_relogin_exception", quiet=True)
             if progress_id:
                 self.update_relogin_progress(progress_id, access_token, "异常", str(exc))
-
-    def _login_with_password(self, email: str, password: str) -> dict:
-        """通过邮箱+密码登录，返回 {access_token, refresh_token, id_token, ...}"""
-        from curl_cffi import requests
-        
-        # 常量
-        auth_base = "https://auth.openai.com"
-        platform_oauth_audience = "https://api.openai.com/v1"
-        platform_auth0_client = "eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9"
-        platform_oauth_client_id = self._OAUTH_CLIENT_ID
-        platform_oauth_redirect_uri = "https://platform.openai.com/auth/callback"
-        user_agent = self._OAUTH_USER_AGENT
-        
-        # 创建 session
-        session_kwargs = {"impersonate": "chrome110", "verify": False}
-        proxy = config.get_proxy_settings()
-        if proxy:
-            session_kwargs["proxy"] = proxy
-        session = requests.Session(**session_kwargs)
-        
-        try:
-            device_id = str(uuid.uuid4())
-            
-            # ─── 方式2: OAuth authorize 流程 ──────────────────────────
-            # 使用 Platform Client + PKCE
-            
-            from utils.pkce import generate_pkce
-            code_verifier, code_challenge = generate_pkce()
-            
-            # ② 发起 OAuth authorize 请求 (使用 Platform Client + PKCE)
-            session.cookies.set("oai-did", device_id, domain=".auth.openai.com")
-            session.cookies.set("oai-did", device_id, domain="auth.openai.com")
-            params = {
-                "issuer": auth_base,
-                "client_id": platform_oauth_client_id,
-                "audience": platform_oauth_audience,
-                "redirect_uri": platform_oauth_redirect_uri,
-                "device_id": device_id,
-                "screen_hint": "login_or_signup",
-                "max_age": "0",
-                "login_hint": email,
-                "scope": "openid profile email offline_access",
-                "response_type": "code",
-                "response_mode": "query",
-                "state": secrets.token_urlsafe(32),
-                "nonce": secrets.token_urlsafe(32),
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-                "auth0Client": platform_auth0_client,
-            }
-            authorize_url = f"{auth_base}/api/accounts/authorize?{urlencode(params)}"
-            resp = session.get(
-                authorize_url,
-                headers={
-                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "user-agent": user_agent,
-                    "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": '"Windows"',
-                    "sec-fetch-dest": "document",
-                    "sec-fetch-mode": "navigate",
-                    "sec-fetch-site": "cross-site",
-                    "sec-fetch-user": "?1",
-                    "upgrade-insecure-requests": "1",
-                    "referer": "https://platform.openai.com/",
-                },
-                allow_redirects=True,
-                timeout=30,
-            )
-            
-            if resp.status_code not in (200, 302):
-                return {"ok": False, "error": f"authorize_failed_{resp.status_code}", "detail": {"url": resp.url, "text": resp.text[:500]}}
-            
-            # 检测最终 URL 是否指向错误页面
-            final_url = str(resp.url)
-            if "/error" in final_url and "payload=" in final_url:
-                from urllib.parse import parse_qs, urlparse
-                try:
-                    parsed_query = parse_qs(urlparse(final_url).query)
-                    error_payload_b64 = parsed_query.get("payload", [""])[0]
-                    error_payload_b64 += "=" * ((4 - len(error_payload_b64) % 4) % 4)
-                    error_payload = json.loads(base64.b64decode(error_payload_b64))
-                    error_code = error_payload.get("errorCode", "")
-                    if error_code == "rate_limit_exceeded":
-                        return {"ok": False, "error": "rate_limit_exceeded", "detail": error_payload}
-                    else:
-                        return {"ok": False, "error": f"authorize_error_{error_code}", "detail": error_payload}
-                except Exception as e:
-                    return {"ok": False, "error": "authorize_redirect_error", "detail": {"url": final_url, "parse_error": str(e)}}
-            
-            # ③ 提交密码验证
-            login_headers = {
-                "accept": "application/json",
-                "accept-language": "zh-CN,zh;q=0.9",
-                "content-type": "application/json",
-                "origin": auth_base,
-                "priority": "u=1, i",
-                "user-agent": user_agent,
-                "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
-                "sec-ch-ua-mobile": "?0",
-                "sec-ch-ua-platform": '"Windows"',
-                "sec-fetch-dest": "empty",
-                "sec-fetch-mode": "cors",
-                "sec-fetch-site": "same-origin",
-                "referer": f"{auth_base}/email-verification",
-                "oai-device-id": device_id,
-            }
-            
-            # 添加 sentinel token
-            try:
-                from utils.sentinel import build_sentinel_token
-                sentinel_val, oai_sc_val = build_sentinel_token(session, device_id, "password_verify")
-                login_headers["openai-sentinel-token"] = sentinel_val
-                if oai_sc_val:
-                    session.cookies.set("oai-sc", oai_sc_val, domain=".openai.com")
-            except Exception:
-                pass
-            
-            login_resp = session.post(
-                f"{auth_base}/api/accounts/password/verify",
-                headers=login_headers,
-                json={"password": password},
-                timeout=30,
-            )
-            
-            login_data = {}
-            try:
-                login_data = login_resp.json() if login_resp.text else {}
-            except Exception:
-                pass
-            
-            if login_resp.status_code != 200:
-                error_code = login_data.get("error", {}).get("code", "")
-                error_msg = login_data.get("error", {}).get("message", "")
-                if error_code == "unsupported_country_region_territory":
-                    return {"ok": False, "error": "unsupported_country_region_territory", "detail": login_data}
-                elif error_code == "invalid_state":
-                    return {"ok": False, "error": "invalid_state", "detail": login_data}
-                elif "Invalid credentials" in error_msg or "wrong password" in error_msg.lower():
-                    return {"ok": False, "error": "invalid_password", "detail": login_data}
-                return {"ok": False, "error": f"password_verify_failed_{login_resp.status_code}", "detail": login_data}
-            
-            # 获取 authorization code
-            continue_url = str(login_data.get("continue_url") or "").strip()
-            auth_code = ""
-            if continue_url:
-                from urllib.parse import parse_qs, urlparse
-                parsed_params = parse_qs(urlparse(continue_url).query)
-                auth_code = str((parsed_params.get("code") or [""])[0]).strip()
-            
-            # ─── 处理邮箱 OTP 验证 ──────────────────────────
-            if not auth_code:
-                page_type = ""
-                page_info = login_data.get("page")
-                if isinstance(page_info, dict):
-                    page_type = str(page_info.get("type") or "")
-                
-                if page_type == "email_otp_verification":
-                    # 需要验证码才能登录，直接标记为账号异常
-                    return {"ok": False, "error": "need_verification_code", "detail": login_data}
-                else:
-                    return {"ok": False, "error": "no_auth_code", "detail": login_data}
-            
-            # ④ 用 code 换 token (使用 Platform Client + code_verifier)
-            platform_base = "https://platform.openai.com"
-            token_resp = session.post(
-                f"{auth_base}/api/accounts/oauth/token",
-                headers={
-                    "accept": "*/*",
-                    "accept-language": "zh-CN,zh;q=0.9",
-                    "auth0-client": platform_auth0_client,
-                    "cache-control": "no-cache",
-                    "content-type": "application/json",
-                    "origin": platform_base,
-                    "pragma": "no-cache",
-                    "priority": "u=1, i",
-                    "referer": f"{platform_base}/",
-                    "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": '"Windows"',
-                    "sec-fetch-dest": "empty",
-                    "sec-fetch-mode": "cors",
-                    "sec-fetch-site": "same-site",
-                    "user-agent": user_agent,
-                },
-                json={
-                    "client_id": platform_oauth_client_id,
-                    "code_verifier": code_verifier,
-                    "grant_type": "authorization_code",
-                    "code": auth_code,
-                    "redirect_uri": platform_oauth_redirect_uri,
-                },
-                verify=False,
-                timeout=60,
-            )
-            
-            token_data = {}
-            try:
-                token_data = token_resp.json() if token_resp.text else {}
-            except Exception:
-                pass
-            
-            if token_resp.status_code != 200 or not token_data.get("access_token"):
-                return {"ok": False, "error": "token_exchange_failed", "detail": token_data}
-            
-            access_token = str(token_data.get("access_token") or "").strip()
-            refresh_token = str(token_data.get("refresh_token") or "").strip()
-            id_token = str(token_data.get("id_token") or "").strip()
-            
-            # ⑤ 用 access_token 获取用户信息
-            user_info = {}
-            try:
-                me_resp = session.get(
-                    "https://chatgpt.com/backend-api/me",
-                    headers={
-                        "accept": "application/json",
-                        "authorization": f"Bearer {access_token}",
-                        "user-agent": user_agent,
-                    },
-                    timeout=30,
-                )
-                if me_resp.status_code == 200:
-                    user_info = me_resp.json() if me_resp.text else {}
-            except Exception:
-                pass
-            
-            # 解析 JWT payload
-            jwt_payload = self._decode_jwt_payload(access_token)
-            
-            email_from_jwt = str(jwt_payload.get("https://api.openai.com/profile", {}).get("email") or "").strip()
-            account_id_from_jwt = str(
-                jwt_payload.get("https://api.openai.com/auth", {}).get("chatgpt_account_id") or ""
-            ).strip()
-            
-            account_info = user_info.get("account") if isinstance(user_info.get("account"), dict) else {}
-            result = {
-                "ok": True,
-                "email": email_from_jwt or email,
-                "account_id": account_id_from_jwt or account_info.get("account_id", ""),
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "id_token": id_token,
-                "expires_at": jwt_payload.get("exp"),
-                "source_type": "password",
-            }
-            
-            return result
-        
-        finally:
-            session.close()
 
     def list_expiring_access_tokens(self) -> list[str]:
         with self._lock:
@@ -1212,42 +1076,41 @@ class AccountService:
 
     def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False) -> bool:
         account = self.get_account(access_token)
-        invalid_count = int((account or {}).get("invalid_count") or 0) + 1
+        if not account:
+            return False
+        invalid_count = int(account.get("invalid_count") or 0) + 1
         now_iso = datetime.now(timezone.utc).isoformat()
+        email = str(account.get("email") or "").strip()
 
-        # 防误删状态机：连续失败 <= 2 次仅标记异常，留存容灾自愈窗口，至少第 3 次持续失败才执行物理删除
-        if invalid_count <= 2 or not config.auto_remove_invalid_accounts:
-            self.update_account(
-                access_token,
-                {
-                    "status": "异常",
-                    "quota": 0,
-                    "invalid_count": invalid_count,
-                    "last_invalid_at": now_iso,
-                },
-                quiet=quiet,
-            )
+        # 标记为异常，生图配额归零
+        self.update_account(
+            access_token,
+            {
+                "status": "异常",
+                "quota": 0,
+                "invalid_count": invalid_count,
+                "last_invalid_at": now_iso,
+            },
+            quiet=quiet,
+        )
+
+        # 触发邮箱重登自愈：只要开启自愈且有邮箱，进入异步队列重试
+        if email and getattr(config, "auto_relogin_after_refresh", True):
+            self.enqueue_relogin(access_token, email, account.get("proxy"))
             return False
 
-        removed = bool(self.delete_accounts([access_token])["removed"])
-        if removed:
-            log_service.add(
-                LOG_TYPE_ACCOUNT,
-                "自动移除异常账号",
-                {"source": event, "token": anonymize_token(access_token), "invalid_count": invalid_count},
-            )
-        elif access_token:
-            self.update_account(
-                access_token,
-                {
-                    "status": "异常",
-                    "quota": 0,
-                    "invalid_count": invalid_count,
-                    "last_invalid_at": now_iso,
-                },
-                quiet=quiet,
-            )
-        return removed
+        # 如果没有邮箱（无法自愈），或者关闭了自愈且开启了自动移除，则物理删除
+        if not email or config.auto_remove_invalid_accounts:
+            removed = bool(self.delete_accounts([access_token])["removed"])
+            if removed:
+                self._notify_pool_health_change()
+                log_service.add(
+                    LOG_TYPE_ACCOUNT,
+                    "自动移除异常账号",
+                    {"source": event, "token": anonymize_token(access_token), "reason": "no_email_or_auto_remove"},
+                )
+            return removed
+        return False
 
     def get_account(self, access_token: str) -> dict | None:
         if not access_token:
@@ -1287,6 +1150,15 @@ class AccountService:
                 token
                 for item in self._accounts.values()
                 if item.get("status") == "正常"
+                   and (token := item.get("access_token") or "")
+            ]
+
+    def list_invalid_tokens(self) -> list[str]:
+        with self._lock:
+            return [
+                token
+                for item in self._accounts.values()
+                if item.get("status") == "异常"
                    and (token := item.get("access_token") or "")
             ]
 
@@ -1731,9 +1603,9 @@ class AccountService:
         else:
             executor.shutdown(wait=True, cancel_futures=True)
 
-        # 自动重新登录异常账号（仅当配置开启时）
+        # 自动将异常账号加入邮箱验证码重登自愈队列（仅当配置开启时）
         relogined = 0
-        if config.auto_relogin_after_refresh:
+        if getattr(config, "auto_relogin_after_refresh", True):
             for token in access_tokens:
                 account = self.get_account(token)
                 if not account:
@@ -1741,20 +1613,11 @@ class AccountService:
                 status = str(account.get("status") or "").strip()
                 if status != "异常":
                     continue
-                source_type = str(account.get("source_type") or "").strip()
-                if source_type == "web_register":
-                    continue
                 email = str(account.get("email") or "").strip()
-                password = str(account.get("password") or "").strip()
-                if not email or not password:
+                if not email:
                     continue
-                t = Thread(
-                    target=self._password_re_login_thread,
-                    args=(token, email, password, "auto_relogin_after_refresh"),
-                    daemon=True,
-                )
-                t.start()
-                relogined += 1
+                if self.enqueue_relogin(token, email, account.get("proxy")):
+                    relogined += 1
 
         result = {
             "refreshed": refreshed,
@@ -1769,9 +1632,9 @@ class AccountService:
         return result
 
     def re_login_accounts(self, access_tokens: list[str], progress_id: str | None = None) -> dict[str, Any]:
-        """对选中账号执行密码重新登录流程。
+        """对选中账号执行邮箱验证码重新登录自愈流程。
 
-        仅对包含 email + password 的账号有效。
+        仅对包含有效 email 的账号有效。
         登录成功后自动将状态设为"正常"。
         """
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
@@ -1797,17 +1660,16 @@ class AccountService:
                 continue
 
             email = str(account.get("email") or "").strip()
-            password = str(account.get("password") or "").strip()
-            if not email or not password:
+            if not email:
                 skipped += 1
                 if progress_id:
-                    self.update_relogin_progress(progress_id, token, "跳过", "无邮箱密码")
+                    self.update_relogin_progress(progress_id, token, "跳过", "无邮箱")
                 continue
 
-            # 在新线程中执行密码重新登录
+            # 在新线程中执行邮箱验证码重新登录
             t = Thread(
-                target=self._password_re_login_thread,
-                args=(token, email, password, "manual_relogin", progress_id),
+                target=self._manual_email_relogin_thread,
+                args=(token, email, account.get("proxy"), "manual_relogin", progress_id),
                 daemon=True,
             )
             t.start()
@@ -1820,12 +1682,8 @@ class AccountService:
             "items": self.list_accounts(),
         }
         if progress_id:
-            # 如果所有账号都已同步处理完毕（没有启动线程），直接标记完成
             if relogined == 0:
                 self.finish_relogin_progress(progress_id, result)
-            else:
-                # 有线程在运行，等线程结束后再完成
-                pass
         return result
 
     def build_export_items(self, access_tokens: list[str] | None = None) -> list[dict[str, str]]:

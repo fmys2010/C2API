@@ -147,7 +147,7 @@ export function ConfigCard() {
           </div>
 
           <div className="rounded-xl border border-border bg-muted/40 p-4 space-y-3">
-            <div className="text-xs font-semibold text-muted-foreground">容灾自愈与防误删开关</div>
+            <div className="text-xs font-semibold text-muted-foreground">容灾自愈与清理策略</div>
             <div className="grid gap-3 md:grid-cols-3">
               <label className="flex items-start gap-2.5 text-xs text-foreground cursor-pointer">
                 <Checkbox
@@ -156,8 +156,8 @@ export function ConfigCard() {
                   className="mt-0.5"
                 />
                 <div>
-                  <div className="font-medium text-foreground">自动重新登录自愈</div>
-                  <div className="text-muted-foreground text-[11px] leading-tight mt-0.5">检测到失效时自动通过 Session 续期恢复</div>
+                  <div className="font-medium text-foreground">邮箱验证码重登自愈</div>
+                  <div className="text-muted-foreground text-[11px] leading-tight mt-0.5">检测到失效时自动通过邮箱验证码免密登录自愈</div>
                 </div>
               </label>
 
@@ -180,8 +180,8 @@ export function ConfigCard() {
                   className="mt-0.5"
                 />
                 <div>
-                  <div className="font-medium text-rose-500">自动删除异常账号</div>
-                  <div className="text-muted-foreground text-[11px] leading-tight mt-0.5">连续多次失败才物理清理（建议关闭）</div>
+                  <div className="font-medium text-foreground">重登失败后自动删除</div>
+                  <div className="text-muted-foreground text-[11px] leading-tight mt-0.5">连续 2 次重登失败或无托管邮箱时物理清理</div>
                 </div>
               </label>
             </div>

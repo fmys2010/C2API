@@ -68,18 +68,18 @@ class SmartScheduler:
 
             try:
                 stats = account_service.get_stats()
-                active_count = stats.get("active", 0)
-                deficit = target_count - active_count
+                total_count = stats.get("total", 0)
+                deficit = target_count - total_count
 
                 if deficit > 0:
                     self.service.log(
-                        f"📊 [智能检测] 号池健康数 {active_count}/{target_count} (缺口 {deficit} 个)，启动补货..."
+                        f"📊 [智能检测] 号池总数 {total_count}/{target_count} (缺口 {deficit} 个)，启动补货..."
                     )
                     # 批量发起注册补货
                     self._fulfill_deficit(deficit=min(deficit, concurrency * 2), concurrency=concurrency)
                 else:
                     self.service.log(
-                        f"✅ [智能检测] 号池健康数充足 ({active_count}/{target_count})，保持待机监听"
+                        f"✅ [智能检测] 号池总数充足 ({total_count}/{target_count})，保持待机监听"
                     )
                     self._consecutive_failures = 0
 

@@ -228,10 +228,12 @@ class GmailMailProvider(BaseMailProvider):
                                     log_fn(f"[Gmail-IMAP] 收到并核验目标验证码: {email_addr} -> {code}")
                                 # 提取成功后自动删除邮件，保持收件箱干净
                                 try:
+                                    # Gmail 专有扩展：移至废纸篓（彻底解决 Gmail Auto-Expunge 设置导致的收件箱残留）
+                                    client.store(num, "+X-GM-LABELS", "\\Trash")
                                     client.store(num, "+FLAGS", "\\Deleted")
                                     client.expunge()
                                     if log_fn:
-                                        log_fn(f"[Gmail-IMAP] 已自动删除已处理邮件")
+                                        log_fn(f"[Gmail-IMAP] 已自动移至废纸篓并删除邮件")
                                 except Exception as de:
                                     logger.debug(f"[Gmail-IMAP] 删除邮件提示: {de}")
                                 return code

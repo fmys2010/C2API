@@ -82,37 +82,22 @@ def sanitize_sub2api_servers(servers: list[dict]) -> list[dict]:
 def start_limited_account_watcher(stop_event: Event) -> Thread:
     def worker() -> None:
         import time
-        last_patrol_time = time.time()
-        last_keepalive_time = 0.0
+        last_patrol_time = 0.0
 
         while not stop_event.is_set():
             try:
                 now = time.time()
                 patrol_interval_seconds = max(60, config.refresh_account_interval_minute * 60)
-                keepalive_interval_seconds = getattr(config, "account_keepalive_interval_seconds", 120)
 
-                # 1. 方案 C: 常驻轻量保活心跳（默认每 2 分钟心跳一次，防止 OpenAI 3~5 分钟空闲超时）
-                if now - last_keepalive_time >= keepalive_interval_seconds:
-                    last_keepalive_time = now
-                    normal_tokens = account_service.list_normal_tokens()
-                    if normal_tokens:
-                        for token in normal_tokens:
-                            if stop_event.is_set():
-                                break
-                            try:
-                                account_service.ping_account_heartbeat(token)
-                            except Exception as pe:
-                                print(f"[account-watcher] heartbeat error: {pe}")
-                            stop_event.wait(1)
-
-                # 2. 定期全量巡检（默认 5 分钟一次，巡检限流、过期、配额与异常状态）
+                # 定期全量巡检（默认 5 分钟一次，巡检限流、过期、异常状态，并自动触发邮箱验证码重登自愈）
                 if now - last_patrol_time >= patrol_interval_seconds:
                     last_patrol_time = now
                     normal_tokens = account_service.list_normal_tokens()
                     limited_tokens = account_service.list_limited_tokens()
                     expiring_tokens = account_service.list_expiring_access_tokens()
+                    invalid_tokens = account_service.list_invalid_tokens()
                     keepalive_tokens = account_service.list_refresh_token_keepalive_tokens()
-                    tokens = list(dict.fromkeys([*limited_tokens, *normal_tokens, *expiring_tokens]))
+                    tokens = list(dict.fromkeys([*limited_tokens, *normal_tokens, *expiring_tokens, *invalid_tokens]))
                     expiring_token_set = set(expiring_tokens)
                     keepalive_tokens = [token for token in keepalive_tokens if token not in expiring_token_set]
                     if tokens:
@@ -120,6 +105,7 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
                             "[account-watcher] patrolling "
                             f"{len(limited_tokens)} limited accounts, "
                             f"{len(normal_tokens)} normal accounts, "
+                            f"{len(invalid_tokens)} invalid accounts, "
                             f"{len(expiring_tokens)} expiring access tokens"
                         )
                         account_service.refresh_accounts(tokens)
