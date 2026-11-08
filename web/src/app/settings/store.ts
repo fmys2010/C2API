@@ -162,7 +162,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
     image_settle_secs: Number(config.image_settle_secs || 2.0),
     image_timeout_retry_secs: Number(config.image_timeout_retry_secs || 30),
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts !== false),
-    auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
+    auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts !== false),
     auto_relogin_after_refresh: Boolean(config.auto_relogin_after_refresh !== false),
     log_levels: Array.isArray(config.log_levels) ? config.log_levels : [],
     proxy: typeof config.proxy === "string" ? config.proxy : "",

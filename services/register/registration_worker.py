@@ -65,8 +65,10 @@ def register_single_account(
     mail_provider: BaseMailProvider,
     proxy: Optional[str] = None,
     log_fn: Optional[Callable[[str], None]] = None,
+    target_email: Optional[str] = None,
+    old_access_token: Optional[str] = None,
 ) -> dict[str, Any]:
-    """执行单个 ChatGPT 官方账号的完整注册流程。"""
+    """执行单个 ChatGPT 官方账号的完整注册/重跑自愈流程。"""
     def log(msg: str):
         if log_fn:
             log_fn(msg)
@@ -75,17 +77,23 @@ def register_single_account(
     proxies = {"http": proxy, "https": proxy} if proxy else None
     proxy_info = proxy.split("@")[-1] if proxy and "@" in proxy else (proxy or "直连/TUN")
 
-    log(f"开始新账号注册任务 (网络环境: {proxy_info})")
+    if target_email:
+        email_addr = target_email.strip()
+        email_token = email_addr
+        masked_email = email_addr[:3] + "***@" + email_addr.split("@")[-1] if "@" in email_addr else email_addr
+        log(f"开始异常账号重跑注册流程: {masked_email} (网络环境: {proxy_info})")
+    else:
+        log(f"开始新账号注册任务 (网络环境: {proxy_info})")
 
-    # 1. 申请注册邮箱
-    email_addr, email_token = mail_provider.create_email()
-    if not email_addr:
-        err = "分配邮箱失败，请检查邮箱服务或域名配置"
-        log(f"❌ {err}")
-        return {"success": False, "email": "", "error": err}
+        # 1. 申请注册邮箱
+        email_addr, email_token = mail_provider.create_email()
+        if not email_addr:
+            err = "分配邮箱失败，请检查邮箱服务或域名配置"
+            log(f"❌ {err}")
+            return {"success": False, "email": "", "error": err}
 
-    masked_email = email_addr[:3] + "***@" + email_addr.split("@")[-1]
-    log(f"已申请注册邮箱: {masked_email}")
+        masked_email = email_addr[:3] + "***@" + email_addr.split("@")[-1]
+        log(f"已申请注册邮箱: {masked_email}")
 
     # 2. 初始化高仿真 Session 客户端
     session = requests.Session(proxies=proxies, impersonate="chrome")
@@ -161,46 +169,65 @@ def register_single_account(
         cont_url = str(signup_data.get("continue_url") or "")
         log(f"账号提交成功，会话流转至: {page_type or cont_url}")
 
-        # 4.1 提交并绑定独立密码 (方案 B: 账号密码容灾自愈基础)
-        from services.config import config
-        default_pwd = getattr(config, "default_register_password", "")
-        if default_pwd:
-            account_password = default_pwd
+        account_password = ""
+        if target_email:
+            # 已有账号重跑流程：访问 continue_url 触发验证码派发
+            if cont_url:
+                try:
+                    session.get(
+                        cont_url,
+                        headers={
+                            "user-agent": ua,
+                            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "referer": "https://auth.openai.com/",
+                        },
+                        timeout=25,
+                        verify=False,
+                    )
+                except Exception as ce:
+                    logger.debug(f"[RegisterWorker] GET continue_url error: {ce}")
+            log("已有账号重跑流程：已触发邮箱验证码派发")
         else:
-            account_password = f"P@ss{secrets.token_urlsafe(12)}"
+            # 4.1 全新账号注册：提交并绑定独立密码
+            from services.config import config
+            default_pwd = getattr(config, "default_register_password", "")
+            if default_pwd:
+                account_password = default_pwd
+            else:
+                account_password = f"P@ss{secrets.token_urlsafe(12)}"
 
-        log("正在提交账号密码注册并请求派发验证码...")
-        sentinel_pwd = generate_sentinel_payload(
-            did=did,
-            flow="username_password_create",
-            proxy=proxy,
-            user_agent=ua,
-            ctx=reg_ctx,
-        )
-        pwd_headers = {
-            "user-agent": ua,
-            "accept": "application/json",
-            "content-type": "application/json",
-            "oai-device-id": did,
-            "origin": "https://auth.openai.com",
-            "referer": "https://auth.openai.com/create-account/password",
-            "openai-sentinel-token": sentinel_pwd,
-        }
-        pwd_headers.update(_make_trace_headers())
-        pwd_resp = session.post(
-            "https://auth.openai.com/api/accounts/user/register",
-            headers=pwd_headers,
-            json={"username": email_addr, "password": account_password},
-            timeout=20,
-            verify=False,
-        )
-        if pwd_resp.status_code == 200:
-            cont_send = (pwd_resp.json() if pwd_resp.text else {}).get("continue_url")
-            if cont_send:
-                session.get(cont_send, headers=pwd_headers, timeout=20, verify=False)
-            log("✅ 独立密码绑定成功，已触发邮箱验证码派发")
-        else:
-            log(f"⚠️ 密码提交响应 HTTP {pwd_resp.status_code}: {pwd_resp.text[:100]}，继续验证流程")
+            log("正在提交账号密码注册并请求派发验证码...")
+            sentinel_pwd = generate_sentinel_payload(
+                did=did,
+                flow="username_password_create",
+                proxy=proxy,
+                user_agent=ua,
+                ctx=reg_ctx,
+            )
+            pwd_headers = {
+                "user-agent": ua,
+                "accept": "application/json",
+                "content-type": "application/json",
+                "oai-device-id": did,
+                "origin": "https://auth.openai.com",
+                "referer": "https://auth.openai.com/create-account/password",
+                "openai-sentinel-token": sentinel_pwd,
+            }
+            pwd_headers.update(_make_trace_headers())
+            pwd_resp = session.post(
+                "https://auth.openai.com/api/accounts/user/register",
+                headers=pwd_headers,
+                json={"username": email_addr, "password": account_password},
+                timeout=20,
+                verify=False,
+            )
+            if pwd_resp.status_code == 200:
+                cont_send = (pwd_resp.json() if pwd_resp.text else {}).get("continue_url")
+                if cont_send:
+                    session.get(cont_send, headers=pwd_headers, timeout=20, verify=False)
+                log("✅ 独立密码绑定成功，已触发邮箱验证码派发")
+            else:
+                log(f"⚠️ 密码提交响应 HTTP {pwd_resp.status_code}: {pwd_resp.text[:100]}，继续验证流程")
 
         # 5. 轮询提取邮件验证码
         log("正在等待邮件到达并提取验证码...")
@@ -255,8 +282,8 @@ def register_single_account(
         target_continue_url = str(val_data.get("continue_url") or "")
         log("✅ 验证码校验通过")
 
-        # 7. 填写个人资料 (About You)
-        if "about-you" in target_continue_url or "create-account" in target_continue_url:
+        # 7. 填写个人资料 (About You) - 仅全新注册账号需填写
+        if not target_email and ("about-you" in target_continue_url or "create-account" in target_continue_url):
             user_info = _generate_user_info()
             log(f"完善个人信息 (姓名: {user_info['name']}, 生日: {user_info['birthdate']})...")
             sentinel_about = generate_sentinel_payload(
@@ -352,6 +379,46 @@ def register_single_account(
                 session_token = "".join(v for _, v in chunks)
 
         # 9. 存入号池数据库 (SQLite accounts.db)
+        if target_email:
+            target_token = old_access_token or ""
+            if not target_token:
+                for a in account_service.list_accounts():
+                    if str(a.get("email") or "").strip().lower() == email_addr.lower():
+                        target_token = str(a.get("access_token") or "")
+                        break
+            token_data = {
+                "access_token": access_token,
+                "session_token": session_token,
+            }
+            if target_token:
+                account_service._apply_refreshed_tokens(target_token, token_data, "register_rerun")
+            account_service.update_account(
+                access_token,
+                {
+                    "status": "正常",
+                    "invalid_count": 0,
+                    "last_invalid_at": None,
+                    "device_id": did,
+                    "oai-device-id": did,
+                    "user-agent": ua,
+                    "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                quiet=True,
+            )
+            try:
+                account_service.fetch_remote_info(access_token, "relogin_sync")
+            except Exception:
+                pass
+            account_service._notify_pool_health_change()
+            log(f"🎉 异常账号重跑注册成功并自愈恢复！邮箱: {email_addr} (Token: {access_token[:12]}...{access_token[-8:]})")
+            return {
+                "success": True,
+                "email": email_addr,
+                "access_token": access_token,
+                "session_token": session_token,
+                "user": user_obj,
+            }
+
         account_item = {
             "access_token": access_token,
             "refresh_token": "",

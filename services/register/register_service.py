@@ -276,5 +276,41 @@ class RegisterService:
 
         return res
 
+    def rerun_account_registration(
+        self,
+        email: str,
+        old_access_token: str = "",
+        proxy: Optional[str] = None,
+        log_fn: Optional[Callable[[str], None]] = None,
+    ) -> dict[str, Any]:
+        """为异常账号在注册机中重走流程自愈。"""
+        cfg = self.get_config()
+        # 代理优先级：优先使用注册机代理池，若为空则回退到账号原代理或直连
+        selected_proxy = self.proxy_pool.get_proxy() or proxy or None
+        mail_prov = create_mail_provider(cfg, proxy=selected_proxy)
+
+        def log_wrapper(msg: str):
+            if log_fn:
+                log_fn(msg)
+            self.log(f"[异常重跑] {msg}")
+
+        res = register_single_account(
+            mail_provider=mail_prov,
+            proxy=selected_proxy,
+            log_fn=log_wrapper,
+            target_email=email,
+            old_access_token=old_access_token,
+        )
+
+        with self._lock:
+            if res.get("success"):
+                if selected_proxy:
+                    self.proxy_pool.mark_success(selected_proxy)
+            else:
+                if selected_proxy:
+                    self.proxy_pool.mark_failure(selected_proxy)
+
+        return res
+
 
 register_service = RegisterService()

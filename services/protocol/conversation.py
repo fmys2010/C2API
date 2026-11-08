@@ -77,6 +77,18 @@ def is_token_invalid_error(message: str) -> bool:
     )
 
 
+def is_rate_limit_error(message: str) -> bool:
+    """检测 429 或限流错误。"""
+    text = str(message or "").lower()
+    return (
+        "429" in text
+        or "rate limit" in text
+        or "rate_limit" in text
+        or "too many requests" in text
+        or "usage limit" in text
+    )
+
+
 def is_tls_connection_error(message: str) -> bool:
     """检测 TLS/SSL 连接错误，这类错误通常可以通过重试解决。"""
     text = str(message or "").lower()
@@ -1594,6 +1606,10 @@ def _generate_single_image(
                     token = refreshed_token
                     continue
                 account_service.remove_invalid_token(token, "image_stream")
+                continue
+            if not emitted_for_token and is_rate_limit_error(last_error):
+                logger.warning(f"⚠️ [ImageStream] 账号 {account_email or token[:12]} 触发 429/限流，移出或标记限流，换号重试...")
+                account_service.update_account(token, {"status": "限流", "quota": 0})
                 continue
             # TLS/SSL 连接错误：自动重试
             if not emitted_for_token and is_tls_connection_error(last_error):

@@ -449,7 +449,7 @@ class ConfigStore:
 
     @property
     def auto_remove_rate_limited_accounts(self) -> bool:
-        value = self.data.get("auto_remove_rate_limited_accounts", False)
+        value = self.data.get("auto_remove_rate_limited_accounts", True)
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
