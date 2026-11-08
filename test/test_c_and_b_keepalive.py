@@ -77,12 +77,14 @@ class EmailOTPReloginAndDeletionTests(unittest.TestCase):
 
     @patch.object(AccountService, "login_with_email_otp")
     def test_relogin_twice_failure_physically_deletes(self, mock_login):
+        config.data["auto_remove_invalid_accounts"] = True
         token = "test_token_relogin_fail"
         self.service.add_account_items([{
             "access_token": token,
             "email": "fail@example.com",
             "status": "异常",
             "invalid_count": 1,
+            "quota": 0,
         }])
         mock_login.return_value = {"ok": False, "error": "otp_timeout"}
 
@@ -91,6 +93,25 @@ class EmailOTPReloginAndDeletionTests(unittest.TestCase):
         self.assertEqual(mock_login.call_count, 2)
         acc = self.service.get_account(token)
         self.assertIsNone(acc, "Account must be deleted after 2 failed relogin attempts")
+
+    @patch.object(AccountService, "login_with_email_otp")
+    def test_relogin_failure_preserves_account_with_quota(self, mock_login):
+        config.data["auto_remove_invalid_accounts"] = True
+        token = "test_token_with_quota"
+        self.service.add_account_items([{
+            "access_token": token,
+            "email": "quota@example.com",
+            "status": "异常",
+            "invalid_count": 1,
+            "quota": 20,
+        }])
+        mock_login.return_value = {"ok": False, "error": "otp_timeout"}
+
+        self.service._execute_relogin_with_retry(token, "quota@example.com")
+
+        acc = self.service.get_account(token)
+        self.assertIsNotNone(acc, "Account with quota must NEVER be deleted on relogin failure")
+        self.assertEqual(acc.get("quota"), 20)
 
     @patch.object(AccountService, "fetch_remote_info")
     @patch.object(AccountService, "login_with_email_otp")

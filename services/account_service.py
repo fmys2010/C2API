@@ -510,14 +510,67 @@ class AccountService:
             return True
 
     def _execute_relogin_with_retry(self, access_token: str, email: str, proxy: Any = None) -> None:
-        """执行重试逻辑：尝试第 1 次，失败立即重试第 2 次；连续 2 次失败则物理删除。"""
+        """执行重试逻辑：
+        1. 优先尝试使用 Session Token 快速换取全新 AccessToken (官方原生 Web 会话维持)
+        2. 若 Session Token 不存在或续期失败，使用官方邮箱验证码协议重新登录自愈
+        3. 若重登失败，对有额度 (quota > 0) 的账号严禁物理删除，保留以便额度恢复使用！
+        """
         from services.register.register_service import register_service
+
+        account = self.get_account(access_token)
+        if not account:
+            for a in self.list_accounts():
+                if str(a.get("email") or "").strip().lower() == email.strip().lower():
+                    account = a
+                    access_token = str(a.get("access_token") or "")
+                    break
+        if not account:
+            return
+
+        # 阶段 1: 优先尝试 Session Token 快速刷新 (无需验证码，成功率最高且秒级完成)
+        session_token = str(account.get("session_token") or "").strip()
+        if session_token:
+            logger.info(f"🔄 [Relogin] 账号 {email} 尝试优先通过 Session Token 续期换取全新 AccessToken...")
+            try:
+                refreshed_token = self._refresh_via_session_token(account, event="relogin_session_token")
+                if refreshed_token:
+                    self.update_account(
+                        refreshed_token,
+                        {
+                            "status": "正常",
+                            "invalid_count": 0,
+                            "last_invalid_at": None,
+                            "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        },
+                        quiet=True,
+                    )
+                    try:
+                        self.fetch_remote_info(refreshed_token, "relogin_sync")
+                    except Exception:
+                        pass
+                    self._notify_pool_health_change()
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "Session续期重登自愈成功",
+                        {
+                            "email": email,
+                            "old_token": anonymize_token(access_token),
+                            "new_token": anonymize_token(refreshed_token),
+                            "status": "正常",
+                        },
+                    )
+                    logger.info(f"🎉 [Relogin] 账号 {email} 成功通过 Session Token 续期恢复为 正常 状态！新 Token: {anonymize_token(refreshed_token)}")
+                    return
+            except Exception as se:
+                logger.warning(f"⚠️ [Relogin] 账号 {email} Session Token 续期异常: {se}，尝试邮箱验证码重登...")
+
+        # 阶段 2: Session Token 不存在或续期失败，执行邮箱验证码重登自愈 (最多重试 2 次)
         try:
             current_proxy = proxy or register_service.proxy_pool.get_proxy()
             logger.info(f"🔄 [Relogin] 开始为异常账号 {email} 执行邮箱验证码自愈 (第 1 次尝试)...")
             res = self.login_with_email_otp(email, current_proxy)
             if not res.get("ok"):
-                logger.warning(f"⚠️ [Relogin] 账号 {email} 第 1 次重登失败: {res.get('error')}，立即执行第 2 次重试...")
+                logger.warning(f"⚠️ [Relogin] 账号 {email} 第 1 次重登失败: {res.get('error')}，等待 3 秒执行第 2 次重试...")
                 time.sleep(3)
                 retry_proxy = register_service.proxy_pool.get_proxy() or current_proxy
                 res = self.login_with_email_otp(email, retry_proxy)
@@ -560,24 +613,53 @@ class AccountService:
                     },
                 )
                 logger.info(f"🎉 [Relogin] 账号 {email} 邮箱验证码重登自愈成功！新 Token 已生效，状态恢复为 正常")
+                return
             else:
                 err_msg = res.get("error")
-                logger.warning(f"❌ [Relogin] 账号 {email} 连续 2 次重登失败 ({err_msg})，执行物理删除！")
-                self.delete_accounts([access_token])
-                self._notify_pool_health_change()
-                log_service.add(
-                    LOG_TYPE_ACCOUNT,
-                    "自动删除重登失败账号",
-                    {
-                        "email": email,
-                        "token": anonymize_token(access_token),
-                        "reason": f"relogin_failed_twice: {err_msg}",
-                    },
-                )
+                current_quota = int(account.get("quota") or 0)
+                if current_quota > 0:
+                    logger.warning(f"⚠️ [Relogin] 账号 {email} 重登失败 ({err_msg})，但账号剩余额度为 {current_quota}，严格保留有额度账号，不执行物理删除！")
+                    self.update_account(
+                        access_token,
+                        {
+                            "status": "异常",
+                            "last_invalid_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        },
+                        quiet=True,
+                    )
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "重登失败保留有额度账号",
+                        {
+                            "email": email,
+                            "token": anonymize_token(access_token),
+                            "quota": current_quota,
+                            "reason": f"relogin_failed: {err_msg}",
+                        },
+                    )
+                    return
+
+                if config.auto_remove_invalid_accounts:
+                    logger.warning(f"❌ [Relogin] 账号 {email} 无剩余额度 (quota={current_quota}) 且连续 2 次重登失败 ({err_msg})，执行物理清理！")
+                    self.delete_accounts([access_token])
+                    self._notify_pool_health_change()
+                    log_service.add(
+                        LOG_TYPE_ACCOUNT,
+                        "自动删除重登失败无额度账号",
+                        {
+                            "email": email,
+                            "token": anonymize_token(access_token),
+                            "reason": f"relogin_failed_twice: {err_msg}",
+                        },
+                    )
+                else:
+                    logger.info(f"ℹ️ [Relogin] 账号 {email} 重登失败 ({err_msg})，未开启自动清理，保持异常状态")
         except Exception as exc:
             logger.error(f"[Relogin] 账号 {email} 重登自愈处理异常: {exc}", exc_info=True)
-            self.delete_accounts([access_token])
-            self._notify_pool_health_change()
+            current_quota = int(account.get("quota") or 0)
+            if current_quota <= 0 and config.auto_remove_invalid_accounts:
+                self.delete_accounts([access_token])
+                self._notify_pool_health_change()
         finally:
             with self._relogin_lock:
                 self._relogin_in_flight.discard(email)
@@ -766,6 +848,23 @@ class AccountService:
                     "detail": signup_resp.text[:200],
                 }
 
+            signup_data = signup_resp.json() if signup_resp.text else {}
+            cont_url = str(signup_data.get("continue_url") or "")
+            if cont_url:
+                try:
+                    session.get(
+                        cont_url,
+                        headers={
+                            "user-agent": ua,
+                            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "referer": "https://auth.openai.com/",
+                        },
+                        timeout=25,
+                        verify=False,
+                    )
+                except Exception as ce:
+                    logger.debug(f"[EmailOTP-Relogin] GET continue_url error: {ce}")
+
             # 轮询邮箱获取验证码（提取完成后驱动会自动删除邮件并移入废纸篓）
             otp_code = mail_provider.get_code(
                 email_addr,
@@ -882,8 +981,40 @@ class AccountService:
     def _manual_email_relogin_thread(
         self, access_token: str, email: str, proxy: Any, event: str, progress_id: Optional[str] = None
     ) -> None:
-        """手动重新登录线程入口（通过邮箱验证码重登）"""
+        """手动重新登录线程入口（优先 Session Token 续期，降级邮箱验证码重登）"""
         try:
+            account = self.get_account(access_token)
+            if not account:
+                for a in self.list_accounts():
+                    if str(a.get("email") or "").strip().lower() == email.strip().lower():
+                        account = a
+                        access_token = str(a.get("access_token") or "")
+                        break
+
+            # 1. 优先尝试 Session Token
+            if account and str(account.get("session_token") or "").strip():
+                refreshed_token = self._refresh_via_session_token(account, event=f"{event}:session_token")
+                if refreshed_token:
+                    self.update_account(
+                        refreshed_token,
+                        {
+                            "status": "正常",
+                            "invalid_count": 0,
+                            "last_invalid_at": None,
+                            "token_updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        },
+                        quiet=True,
+                    )
+                    try:
+                        self.fetch_remote_info(refreshed_token, "relogin_sync")
+                    except Exception:
+                        pass
+                    self._notify_pool_health_change()
+                    if progress_id:
+                        self.update_relogin_progress(progress_id, access_token, "成功")
+                    return
+
+            # 2. 降级邮箱验证码重登
             res = self.login_with_email_otp(email, proxy)
             if not res.get("ok"):
                 time.sleep(2)
@@ -1665,7 +1796,7 @@ class AccountService:
                 continue
             email = str(account.get("email") or "").strip()
             if not email:
-                if config.auto_remove_invalid_accounts and int(account.get("invalid_count") or 0) >= 2:
+                if config.auto_remove_invalid_accounts and int(account.get("quota") or 0) <= 0 and int(account.get("invalid_count") or 0) >= 2:
                     self.delete_accounts([token])
                 continue
             if self.enqueue_relogin(token, email, account.get("proxy")):

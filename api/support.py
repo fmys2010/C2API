@@ -106,7 +106,8 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
                                 if email:
                                     account_service.enqueue_relogin(token, email, account.get("proxy"))
                                 else:
-                                    account_service.delete_accounts([token])
+                                    if config.auto_remove_invalid_accounts and int(account.get("quota") or 0) <= 0:
+                                        account_service.delete_accounts([token])
 
                     tokens = list(dict.fromkeys([*limited_tokens, *normal_tokens, *expiring_tokens]))
                     expiring_token_set = set(expiring_tokens)
