@@ -511,13 +511,16 @@ class AccountService:
 
     def _execute_relogin_with_retry(self, access_token: str, email: str, proxy: Any = None) -> None:
         """执行重试逻辑：尝试第 1 次，失败立即重试第 2 次；连续 2 次失败则物理删除。"""
+        from services.register.register_service import register_service
         try:
+            current_proxy = proxy or register_service.proxy_pool.get_proxy()
             logger.info(f"🔄 [Relogin] 开始为异常账号 {email} 执行邮箱验证码自愈 (第 1 次尝试)...")
-            res = self.login_with_email_otp(email, proxy)
+            res = self.login_with_email_otp(email, current_proxy)
             if not res.get("ok"):
                 logger.warning(f"⚠️ [Relogin] 账号 {email} 第 1 次重登失败: {res.get('error')}，立即执行第 2 次重试...")
-                time.sleep(2)
-                res = self.login_with_email_otp(email, proxy)
+                time.sleep(3)
+                retry_proxy = register_service.proxy_pool.get_proxy() or current_proxy
+                res = self.login_with_email_otp(email, retry_proxy)
 
             if res.get("ok"):
                 new_token = str(res.get("access_token") or "").strip()
@@ -653,6 +656,11 @@ class AccountService:
         from services.register.register_service import register_service
 
         reg_cfg = register_service.get_config()
+        if not proxy:
+            try:
+                proxy = register_service.proxy_pool.get_proxy()
+            except Exception:
+                proxy = None
         mail_provider = create_mail_provider(reg_cfg, proxy=proxy)
 
         proxies = {"http": proxy, "https": proxy} if proxy else None
