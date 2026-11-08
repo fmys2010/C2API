@@ -1,4 +1,4 @@
-"""Unit tests for C (Session Keepalive) + B (Disaster Recovery) and Safe Deletion State Machine."""
+"""Unit tests for Email OTP Relogin Self-Healing and Safe Deletion State Machine."""
 from __future__ import annotations
 
 import unittest
@@ -19,10 +19,11 @@ class FakeStorage:
         self.accounts = list(accounts)
 
 
-class CAndBKeepaliveTests(unittest.TestCase):
+class EmailOTPReloginAndDeletionTests(unittest.TestCase):
     def setUp(self):
         self.storage = FakeStorage()
-        self.service = AccountService(self.storage)
+        with patch.object(AccountService, "_start_relogin_worker"):
+            self.service = AccountService(self.storage)
         self.orig_auto_remove = config.data.get("auto_remove_invalid_accounts")
 
     def tearDown(self):
@@ -50,11 +51,11 @@ class CAndBKeepaliveTests(unittest.TestCase):
         self.assertEqual(acc.get("status"), "异常")
         self.assertEqual(acc.get("invalid_count"), 1)
 
-    def test_safe_state_machine_second_failure_deletes_only_if_configured(self):
-        token = "test_token_2"
+    def test_safe_state_machine_second_failure_deletes_no_email_account_if_configured(self):
+        token = "test_token_no_email"
         self.service.add_account_items([{
             "access_token": token,
-            "email": "test2@example.com",
+            "email": "",
             "status": "异常",
             "invalid_count": 1,
         }])
@@ -74,41 +75,51 @@ class CAndBKeepaliveTests(unittest.TestCase):
         acc = self.service.get_account(token)
         self.assertIsNone(acc)
 
-    @patch.object(AccountService, "_login_with_password")
-    @patch.object(AccountService, "refresh_web_session")
-    def test_recover_account_disaster_prefers_c_then_b(self, mock_refresh_c, mock_login_b):
-        token = "test_token_3"
+    @patch.object(AccountService, "login_with_email_otp")
+    def test_relogin_twice_failure_physically_deletes(self, mock_login):
+        token = "test_token_relogin_fail"
         self.service.add_account_items([{
             "access_token": token,
-            "email": "test3@example.com",
-            "password": "Password123!",
-            "session_token": "valid_session_cookie",
+            "email": "fail@example.com",
             "status": "异常",
             "invalid_count": 1,
         }])
+        mock_login.return_value = {"ok": False, "error": "otp_timeout"}
 
-        # 1. 方案 C 成功时，优先走 C 恢复，不触发 B
-        mock_refresh_c.return_value = {"access_token": "new_c_token"}
-        recovered = self.service.recover_account_disaster(token)
-        self.assertTrue(recovered)
-        mock_refresh_c.assert_called_once()
-        mock_login_b.assert_not_called()
+        self.service._execute_relogin_with_retry(token, "fail@example.com")
 
-        # 2. 方案 C 失败时，降级走 B (密码重新登录)
-        mock_refresh_c.reset_mock()
-        mock_login_b.reset_mock()
-        mock_refresh_c.return_value = None
-        mock_login_b.return_value = {
+        self.assertEqual(mock_login.call_count, 2)
+        acc = self.service.get_account(token)
+        self.assertIsNone(acc, "Account must be deleted after 2 failed relogin attempts")
+
+    @patch.object(AccountService, "fetch_remote_info")
+    @patch.object(AccountService, "login_with_email_otp")
+    def test_relogin_success_heals_account(self, mock_login, mock_fetch):
+        token = "test_token_relogin_succ"
+        self.service.add_account_items([{
+            "access_token": token,
+            "email": "succ@example.com",
+            "status": "异常",
+            "invalid_count": 1,
+            "quota": 0,
+        }])
+        mock_login.return_value = {
             "ok": True,
-            "access_token": "new_b_token",
-            "refresh_token": "b_refresh",
-            "source_type": "password",
+            "access_token": "new_healthy_token",
+            "session_token": "new_sess",
+            "device_id": "dev123",
+            "user_agent": "ua123",
         }
+        mock_fetch.return_value = None
 
-        recovered_b = self.service.recover_account_disaster(token)
-        self.assertTrue(recovered_b)
-        mock_refresh_c.assert_called_once()
-        mock_login_b.assert_called_once()
+        self.service._execute_relogin_with_retry(token, "succ@example.com")
+
+        old_acc = self.service.get_account(token)
+        new_acc = self.service.get_account("new_healthy_token")
+        self.assertIsNotNone(new_acc)
+        self.assertEqual(new_acc.get("status"), "正常")
+        self.assertEqual(new_acc.get("quota"), 25)
+        self.assertEqual(new_acc.get("invalid_count"), 0)
 
 
 if __name__ == "__main__":

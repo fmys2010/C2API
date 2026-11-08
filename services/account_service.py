@@ -616,6 +616,35 @@ class AccountService:
             return self.enqueue_relogin(access_token, email, account.get("proxy"))
         return False
 
+    def _refresh_via_session_token(self, account: dict, event: str = "session_token_refresh") -> str | None:
+        """通过 ChatGPT Web 的 __Secure-next-auth.session-token 调用 /api/auth/session 快速刷新 AccessToken。"""
+        session_token = str(account.get("session_token") or "").strip()
+        if not session_token:
+            return None
+        proxy = account.get("proxy")
+        from curl_cffi import requests
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        ua = str(account.get("user-agent") or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        session = requests.Session(proxies=proxies, impersonate="chrome")
+        session.headers.update({"User-Agent": ua, "Accept": "*/*"})
+        session.cookies.set("__Secure-next-auth.session-token", session_token, domain=".chatgpt.com")
+        try:
+            resp = session.get("https://chatgpt.com/api/auth/session", timeout=20, verify=False)
+            if resp.status_code == 200 and resp.text:
+                data = resp.json()
+                new_at = str(data.get("accessToken") or "").strip()
+                if new_at:
+                    new_session = session.cookies.get("__Secure-next-auth.session-token") or session_token
+                    token_data = {
+                        "access_token": new_at,
+                        "session_token": new_session,
+                    }
+                    old_token = str(account.get("access_token") or "")
+                    return self._apply_refreshed_tokens(old_token, token_data, event)
+        except Exception as exc:
+            logger.debug(f"[SessionTokenRefresh] failed: {exc}")
+        return None
+
     def refresh_access_token(self, access_token: str, *, force: bool = False, event: str = "refresh_access_token") -> str:
         if not access_token:
             return ""
@@ -627,8 +656,13 @@ class AccountService:
             if not self._token_needs_refresh(active_token, force=force):
                 return active_token
             refresh_token = str(account.get("refresh_token") or "").strip()
+            session_token = str(account.get("session_token") or "").strip()
             if not refresh_token:
-                # 无 refresh_token 账号，若开启自愈则触发邮箱验证码重登
+                if session_token:
+                    refreshed = self._refresh_via_session_token(account, event=event)
+                    if refreshed:
+                        return refreshed
+                # 无 refresh_token 或 session_token 失效，若开启自愈则触发邮箱验证码重登
                 email = str(account.get("email") or "").strip()
                 if email and getattr(config, "auto_relogin_after_refresh", True):
                     self.enqueue_relogin(active_token, email, account.get("proxy"))
@@ -1019,41 +1053,25 @@ class AccountService:
     ) -> str:
         """从候选池中获取一个可用的图片生图 token。
 
-        基于本地缓存做初筛，然后通过 fetch_remote_info 做远程验证（token 有效性、配额等）。
-        限制最大尝试次数防止 token rotation 导致无限循环。
+        直接基于本地号池状态和配额分配槽位，不发起阻塞远程探测，防止高并发打崩 OpenAI。
+        如果 token 临近过期，非阻塞尝试刷新；实际请求遇 401 在对话流内自动切换。
         """
-        max_attempts = 20  # 防止无限循环
-        attempted_tokens: set[str] = set()
-        for _attempt in range(max_attempts):
-            access_token = self._acquire_next_candidate_token(
-                excluded_tokens=attempted_tokens,
-                plan_type=plan_type,
-                source_type=source_type,
-                plan_types=plan_types,
-            )
-            attempted_tokens.add(access_token)
-            try:
-                account = self.fetch_remote_info(access_token, "get_available_access_token")
-            except Exception:
-                self.release_image_slot(access_token)
-                continue
-            # fetch_remote_info 内部可能因 token rotation 导致 access_token 变化，
-            # 把新 token 也加入排除列表，防止重复尝试
-            resolved = str((account or {}).get("access_token") or "")
-            if resolved and resolved != access_token:
-                attempted_tokens.add(resolved)
-            if (
-                    self._is_image_account_available(account or {})
-                    and self._account_matches_plan_type(account or {}, plan_type)
-                    and self._account_matches_any_plan_type(account or {}, plan_types)
-                    and self._account_matches_source_type(account or {}, source_type)
-            ):
-                return str((account or {}).get("access_token") or access_token)
-            self.release_image_slot(access_token)
-        raise RuntimeError(
-            f"no available {plan_type or source_type or ''} image quota (tried {len(attempted_tokens)} tokens)".replace("  ", " ").strip()
-            if plan_type or source_type else f"no available image quota (tried {len(attempted_tokens)} tokens)"
+        access_token = self._acquire_next_candidate_token(
+            plan_type=plan_type,
+            source_type=source_type,
+            plan_types=plan_types,
         )
+        try:
+            refreshed = self.refresh_access_token(access_token, event="get_available_access_token")
+            if refreshed and refreshed != access_token:
+                with self._image_slot_condition:
+                    curr_inf = self._image_inflight.pop(access_token, 0)
+                    if curr_inf > 0:
+                        self._image_inflight[refreshed] = int(self._image_inflight.get(refreshed, 0)) + curr_inf
+                return refreshed
+            return access_token
+        except Exception:
+            return access_token
 
     def get_text_access_token(
             self,
@@ -1107,7 +1125,7 @@ class AccountService:
             self._accounts[access_token] = account
             self._save_accounts()
 
-    def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False) -> bool:
+    def remove_invalid_token(self, access_token: str, event: str, quiet: bool = False, force_delete: bool = False) -> bool:
         account = self.get_account(access_token)
         if not account:
             return False
@@ -1127,21 +1145,23 @@ class AccountService:
             quiet=quiet,
         )
 
-        # 触发邮箱重登自愈：只要有邮箱，进入异步队列重登自愈（2次重试失败后物理删除）
-        if email:
+        # 触发邮箱重登自愈：只要有邮箱且非强删，进入异步队列重登自愈（2次重试失败后物理删除）
+        if email and not force_delete:
             self.enqueue_relogin(access_token, email, account.get("proxy"))
             return False
 
-        # 如果没有邮箱（无法自愈），直接物理删除
-        removed = bool(self.delete_accounts([access_token])["removed"])
-        if removed:
-            self._notify_pool_health_change()
-            log_service.add(
-                LOG_TYPE_ACCOUNT,
-                "自动移除异常账号",
-                {"source": event, "token": anonymize_token(access_token), "reason": "no_email_cannot_relogin"},
-            )
-        return removed
+        # 如果没有邮箱（无法自愈）或显式强删：检查是否配置自动删除异常账号或达到重试上限
+        if force_delete or (config.auto_remove_invalid_accounts and invalid_count >= 2):
+            removed = bool(self.delete_accounts([access_token])["removed"])
+            if removed:
+                self._notify_pool_health_change()
+                log_service.add(
+                    LOG_TYPE_ACCOUNT,
+                    "自动移除异常账号",
+                    {"source": event, "token": anonymize_token(access_token), "reason": "no_email_cannot_relogin"},
+                )
+            return removed
+        return False
 
     def get_account(self, access_token: str) -> dict | None:
         if not access_token:
@@ -1372,7 +1392,7 @@ class AccountService:
         access_token: str,
         event: str,
         error: str,
-        defer_invalid_removal: bool = True,
+        defer_invalid_removal: bool = False,
     ) -> bool:
         now = datetime.now(timezone.utc)
         with self._lock:
@@ -1380,7 +1400,6 @@ class AccountService:
             current = self._accounts.get(access_token)
             if current is None:
                 return True
-            should_defer = defer_invalid_removal and self._should_defer_invalid_token(current, now)
             next_item = dict(current)
             next_item["last_invalid_at"] = now.isoformat()
             next_item["last_refresh_error"] = str(error or "invalid access token")
@@ -1389,13 +1408,6 @@ class AccountService:
             if account is not None:
                 self._accounts[access_token] = account
                 self._save_accounts()
-            if should_defer:
-                log_service.add(
-                    LOG_TYPE_ACCOUNT,
-                    "暂缓标记异常账号",
-                    {"source": event, "token": anonymize_token(access_token), "error": str(error or "")},
-                )
-                return False
         return True
 
     def mark_image_result(self, access_token: str, success: bool) -> dict | None:
@@ -1465,7 +1477,11 @@ class AccountService:
                         str(retry_exc),
                         defer_invalid_removal=defer_invalid_removal,
                     ):
-                        self.remove_invalid_token(refreshed_token, event)
+                        self.remove_invalid_token(
+                            refreshed_token,
+                            event,
+                            force_delete=(not defer_invalid_removal and config.auto_remove_invalid_accounts),
+                        )
                     raise
                 active_token = refreshed_token
             else:
@@ -1475,7 +1491,11 @@ class AccountService:
                     str(exc),
                     defer_invalid_removal=defer_invalid_removal,
                 ):
-                    self.remove_invalid_token(active_token, event)
+                    self.remove_invalid_token(
+                        active_token,
+                        event,
+                        force_delete=(not defer_invalid_removal and config.auto_remove_invalid_accounts),
+                    )
                 raise
         self._record_refresh_success(active_token)
         return self.update_account(active_token, result)
@@ -1645,7 +1665,8 @@ class AccountService:
                 continue
             email = str(account.get("email") or "").strip()
             if not email:
-                self.delete_accounts([token])
+                if config.auto_remove_invalid_accounts and int(account.get("invalid_count") or 0) >= 2:
+                    self.delete_accounts([token])
                 continue
             if self.enqueue_relogin(token, email, account.get("proxy")):
                 relogined += 1

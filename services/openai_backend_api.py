@@ -195,14 +195,14 @@ class OpenAIBackendAPI:
             "Pragma": "no-cache",
             "Priority": "u=1, i",
             "Sec-Ch-Ua": self.fp["sec-ch-ua"],
-            "Sec-Ch-Ua-Arch": '"x86"',
+            "Sec-Ch-Ua-Arch": self.fp["sec-ch-ua-arch"],
             "Sec-Ch-Ua-Bitness": '"64"',
-            "Sec-Ch-Ua-Full-Version": '"143.0.3650.96"',
-            "Sec-Ch-Ua-Full-Version-List": '"Microsoft Edge";v="143.0.3650.96", "Chromium";v="143.0.7499.147", "Not A(Brand";v="24.0.0.0"',
+            "Sec-Ch-Ua-Full-Version": self.fp["sec-ch-ua-full-version"],
+            "Sec-Ch-Ua-Full-Version-List": self.fp["sec-ch-ua-full-version-list"],
             "Sec-Ch-Ua-Mobile": self.fp["sec-ch-ua-mobile"],
             "Sec-Ch-Ua-Model": '""',
             "Sec-Ch-Ua-Platform": self.fp["sec-ch-ua-platform"],
-            "Sec-Ch-Ua-Platform-Version": '"19.0.0"',
+            "Sec-Ch-Ua-Platform-Version": self.fp["sec-ch-ua-platform-version"],
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
@@ -260,17 +260,41 @@ class OpenAIBackendAPI:
                 fp[key] = value
         if not fp.get("oai-device-id") and account.get("device_id"):
             fp["oai-device-id"] = str(account["device_id"]).strip()
-        fp.setdefault(
-            "user-agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
-        )
-        fp.setdefault("impersonate", "chrome110")
+        ua = fp.get("user-agent") or str(account.get("user-agent") or "").strip()
+        if not ua:
+            ua = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            )
+        fp["user-agent"] = ua
+
+        is_mac = "Macintosh" in ua or "Mac OS" in ua
+        if is_mac:
+            fp.setdefault("sec-ch-ua-platform", '"macOS"')
+            fp.setdefault("sec-ch-ua", '"Google Chrome";v="146", "Chromium";v="146", "Not?A_Brand";v="24"')
+            fp.setdefault("sec-ch-ua-arch", '"arm"')
+            fp.setdefault("sec-ch-ua-full-version", '"146.0.0.0"')
+            fp.setdefault(
+                "sec-ch-ua-full-version-list",
+                '"Google Chrome";v="146.0.0.0", "Chromium";v="146.0.0.0", "Not?A_Brand";v="24.0.0.0"',
+            )
+            fp.setdefault("sec-ch-ua-platform-version", '"14.7.1"')
+            fp.setdefault("impersonate", "chrome")
+        else:
+            fp.setdefault("sec-ch-ua-platform", '"Windows"')
+            fp.setdefault("sec-ch-ua", '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"')
+            fp.setdefault("sec-ch-ua-arch", '"x86"')
+            fp.setdefault("sec-ch-ua-full-version", '"131.0.6778.86"')
+            fp.setdefault(
+                "sec-ch-ua-full-version-list",
+                '"Google Chrome";v="131.0.6778.86", "Chromium";v="131.0.6778.86", "Not_A Brand";v="24.0.0.0"',
+            )
+            fp.setdefault("sec-ch-ua-platform-version", '"10.0.0"')
+            fp.setdefault("impersonate", "chrome110")
+
         fp.setdefault("oai-device-id", new_uuid())
         fp.setdefault("oai-session-id", new_uuid())
-        fp.setdefault("sec-ch-ua", '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"')
         fp.setdefault("sec-ch-ua-mobile", "?0")
-        fp.setdefault("sec-ch-ua-platform", '"Windows"')
         return fp
 
     def _headers(self, path: str, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
